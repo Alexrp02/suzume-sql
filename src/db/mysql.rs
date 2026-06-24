@@ -15,7 +15,7 @@ use mysql::consts::CapabilityFlags;
 use mysql::prelude::Queryable;
 use mysql::{Conn, Opts, OptsBuilder, Row, TxOpts, Value as MyValue};
 
-use crate::db::query::{Dialect, SelectQuery, build_update};
+use crate::db::query::{Dialect, SelectQuery, build_statement};
 use crate::db::{DatabaseEngine, RAW_ROW_CAP, RawResult};
 use crate::error::DbError;
 use crate::model::delta::RowMutation;
@@ -114,10 +114,10 @@ impl DatabaseEngine for MysqlEngine {
             .start_transaction(TxOpts::default())
             .map_err(|e| DbError::Commit(e.to_string()))?;
         for mutation in mutations {
-            let table_meta = catalog.find(&mutation.table).ok_or_else(|| {
-                DbError::Commit(format!("unknown table `{}`", mutation.table))
+            let table_meta = catalog.find(mutation.table()).ok_or_else(|| {
+                DbError::Commit(format!("unknown table `{}`", mutation.table()))
             })?;
-            let stmt = build_update(Dialect::Mysql, table_meta, mutation);
+            let stmt = build_statement(Dialect::Mysql, table_meta, mutation);
             let params: Vec<MyValue> = stmt.params.iter().map(to_my_value).collect();
             tx.exec_drop(stmt.sql.as_str(), params)
                 .map_err(|e| DbError::Commit(e.to_string()))?;
@@ -125,8 +125,8 @@ impl DatabaseEngine for MysqlEngine {
                 let affected = tx.affected_rows();
                 if affected != 1 {
                     // Dropping `tx` without commit rolls the whole batch back.
-                    return Err(DbError::AmbiguousUpdate {
-                        table: mutation.table.clone(),
+                    return Err(DbError::AmbiguousMatch {
+                        table: mutation.table().to_string(),
                         matched: affected,
                     });
                 }

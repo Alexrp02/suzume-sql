@@ -261,6 +261,7 @@ fn handle_data(app: &mut App, key: KeyEvent) {
         KeyCode::Char('e') | KeyCode::Enter => begin_cell_edit(app),
         KeyCode::Char('i') => app.inspect_cell(),
         KeyCode::Char('I') => app.inspect_row(),
+        KeyCode::Char('D') => app.delete_row(),
         KeyCode::Char('u') => app.discard_pending(),
         KeyCode::Char('y') => app.yank_cell(),
         KeyCode::Char('Y') => app.yank_row(),
@@ -527,6 +528,10 @@ fn begin_cell_edit(app: &mut App) {
         return;
     }
     if grid.row_count() == 0 || grid.col_count() == 0 {
+        return;
+    }
+    if grid.is_pending_delete(grid.sel_row) {
+        app.error("Row is marked for deletion (D to unmark)");
         return;
     }
     let (row, col) = (grid.sel_row, grid.sel_col);

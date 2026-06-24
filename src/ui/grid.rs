@@ -176,11 +176,17 @@ fn data_line(
     editing: Option<&CellEditor>,
 ) -> Line<'static> {
     let grid = &app.browser.grid;
+    let pending_delete = grid.is_pending_delete(row);
+    let sep_style = if pending_delete {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default()
+    };
     let mut spans: Vec<Span> = Vec::new();
 
     for (idx, col) in (first_col..first_col + visible_cols).enumerate() {
         if idx > 0 {
-            spans.push(Span::raw(SEP));
+            spans.push(Span::styled(SEP, sep_style));
         }
         let width = widths.get(col).copied().unwrap_or(MIN_COL_WIDTH);
         let is_selected = row == grid.sel_row && col == grid.sel_col;
@@ -205,6 +211,12 @@ fn data_line(
         }
         if dirty {
             style = style.fg(AMBER).add_modifier(Modifier::BOLD);
+        }
+        // A row marked for deletion overrides any per-cell colouring.
+        if pending_delete {
+            style = Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::CROSSED_OUT);
         }
         if is_selected && focused {
             style = style.add_modifier(Modifier::REVERSED);

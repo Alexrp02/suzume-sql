@@ -31,11 +31,29 @@ pub struct CellDelta {
     pub new: Value,
 }
 
-/// All pending changes for one row, ready to be compiled into a single
-/// parameterised `UPDATE`.
+/// A pending mutation of one row, ready to be compiled into a single
+/// parameterised statement.
+///
+/// A row is either being updated (one or more cell changes) or deleted outright
+/// — two distinct states, not a struct with an optional "deleted" flag. Both
+/// carry the [`RowKey`] that locates the target row.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RowMutation {
-    pub table: String,
-    pub key: RowKey,
-    pub changes: Vec<CellDelta>,
+pub enum RowMutation {
+    Update {
+        table: String,
+        key: RowKey,
+        changes: Vec<CellDelta>,
+    },
+    Delete {
+        table: String,
+        key: RowKey,
+    },
+}
+
+impl RowMutation {
+    pub fn table(&self) -> &str {
+        match self {
+            RowMutation::Update { table, .. } | RowMutation::Delete { table, .. } => table,
+        }
+    }
 }

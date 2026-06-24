@@ -1,6 +1,6 @@
 //! Application state and the top-level state machine.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use edtui::{EditorEventHandler, EditorState, Lines};
 
@@ -129,6 +129,9 @@ pub struct GridView {
     /// Pending edits keyed by `(row, col)`; the source of truth for what is
     /// displayed (amber) and what will be committed.
     pub overlay: HashMap<(usize, usize), Value>,
+    /// Rows marked for deletion (displayed red); committed as `DELETE`s in the
+    /// same transaction as the edits.
+    pub pending_deletes: HashSet<usize>,
     pub sel_row: usize,
     pub sel_col: usize,
     /// Views and the no-table state are read-only: editing is disabled.
@@ -141,6 +144,7 @@ impl GridView {
             columns: Vec::new(),
             rows: Vec::new(),
             overlay: HashMap::new(),
+            pending_deletes: HashSet::new(),
             sel_row: 0,
             sel_col: 0,
             read_only: true,
@@ -152,6 +156,7 @@ impl GridView {
             columns,
             rows: Vec::new(),
             overlay: HashMap::new(),
+            pending_deletes: HashSet::new(),
             sel_row: 0,
             sel_col: 0,
             read_only,
@@ -161,6 +166,7 @@ impl GridView {
     pub fn set_rows(&mut self, rows: Vec<Vec<Value>>) {
         self.rows = rows.into_iter().map(|row| self.type_row(row)).collect();
         self.overlay.clear();
+        self.pending_deletes.clear();
         self.clamp_selection();
     }
 
@@ -201,12 +207,27 @@ impl GridView {
         self.overlay.contains_key(&(row, col))
     }
 
+    pub fn is_pending_delete(&self, row: usize) -> bool {
+        self.pending_deletes.contains(&row)
+    }
+
+    /// Toggle the pending-deletion mark on `row`. Marking a row drops any pending
+    /// cell edits for it: the row is going away, so those edits are moot.
+    pub fn toggle_delete(&mut self, row: usize) {
+        if self.pending_deletes.remove(&row) {
+            return;
+        }
+        self.pending_deletes.insert(row);
+        self.overlay.retain(|&(r, _), _| r != row);
+    }
+
+    /// Total pending row operations (edited cells plus marked-for-deletion rows).
     pub fn pending_count(&self) -> usize {
-        self.overlay.len()
+        self.overlay.len() + self.pending_deletes.len()
     }
 
     pub fn has_pending(&self) -> bool {
-        !self.overlay.is_empty()
+        !self.overlay.is_empty() || !self.pending_deletes.is_empty()
     }
 
     /// Serialize a row to a compact JSON object using the displayed values
@@ -275,15 +296,29 @@ impl GridView {
         self.sel_row = self.row_count().saturating_sub(1);
     }
 
-    /// Compile the overlay into one [`RowMutation`] per edited row.
+    /// Compile the pending state into one [`RowMutation`] per affected row: a
+    /// `Delete` for each marked row and an `Update` for each edited row. A row
+    /// marked for deletion carries no overlay edits (see [`Self::toggle_delete`]),
+    /// so the two sets never overlap.
     pub fn build_mutations(&self, table: &str) -> Vec<RowMutation> {
+        let mut mutations: Vec<RowMutation> = Vec::new();
+
+        for &row in &self.pending_deletes {
+            let Some(row_values) = self.rows.get(row) else {
+                continue;
+            };
+            mutations.push(RowMutation::Delete {
+                table: table.to_string(),
+                key: self.row_key(row_values),
+            });
+        }
+
         // Group overlay entries by row.
         let mut by_row: HashMap<usize, Vec<usize>> = HashMap::new();
         for (row, col) in self.overlay.keys() {
             by_row.entry(*row).or_default().push(*col);
         }
 
-        let mut mutations = Vec::with_capacity(by_row.len());
         for (row, cols) in by_row {
             let Some(row_values) = self.rows.get(row) else {
                 continue;
@@ -305,7 +340,7 @@ impl GridView {
                 });
             }
             if !changes.is_empty() {
-                mutations.push(RowMutation {
+                mutations.push(RowMutation::Update {
                     table: table.to_string(),
                     key,
                     changes,
@@ -986,11 +1021,33 @@ impl App {
         self.scroll_inspect(dir * half);
     }
 
-    /// Discard all pending edits.
+    /// Toggle the pending deletion of the selected row. Deletions are committed
+    /// alongside edits in the same transaction (see [`Self::commit_pending`]).
+    pub fn delete_row(&mut self) {
+        if self.browser.grid.read_only {
+            self.error("This relation is read-only");
+            return;
+        }
+        if self.browser.grid.row_count() == 0 || self.browser.grid.col_count() == 0 {
+            self.info("Nothing to delete");
+            return;
+        }
+        let row = self.browser.grid.sel_row;
+        let was_marked = self.browser.grid.is_pending_delete(row);
+        self.browser.grid.toggle_delete(row);
+        if was_marked {
+            self.info("Deletion unmarked");
+        } else {
+            self.info("Row marked for deletion (Ctrl+S commit / u discard)");
+        }
+    }
+
+    /// Discard all pending edits and deletions.
     pub fn discard_pending(&mut self) {
         if self.browser.grid.has_pending() {
             self.browser.grid.overlay.clear();
-            self.info("Pending edits discarded");
+            self.browser.grid.pending_deletes.clear();
+            self.info("Pending changes discarded");
         }
     }
 
@@ -1076,18 +1133,54 @@ mod tests {
 
         let mutations = grid.build_mutations("users");
         assert_eq!(mutations.len(), 1);
-        let m = &mutations[0];
-        assert_eq!(m.table, "users");
+        let RowMutation::Update {
+            table,
+            key,
+            changes,
+        } = &mutations[0]
+        else {
+            panic!("expected an update mutation");
+        };
+        assert_eq!(table, "users");
         assert_eq!(
-            m.key,
+            *key,
             RowKey::PrimaryKey(vec![KeyPart {
                 column: "id".to_string(),
                 value: Value::Integer(1),
             }])
         );
-        assert_eq!(m.changes.len(), 1);
-        assert_eq!(m.changes[0].original, Value::Text("a@x".to_string()));
-        assert_eq!(m.changes[0].new, Value::Text("new@x".to_string()));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].original, Value::Text("a@x".to_string()));
+        assert_eq!(changes[0].new, Value::Text("new@x".to_string()));
+    }
+
+    #[test]
+    fn marking_a_row_for_deletion_builds_a_delete_and_drops_its_edits() {
+        let mut grid = grid_with_pk();
+        // An edit on the row that is about to be deleted must be discarded.
+        grid.record_edit(0, 1, Value::Text("doomed@x".to_string()));
+        grid.toggle_delete(0);
+        assert!(grid.is_pending_delete(0));
+        assert!(!grid.is_dirty(0, 1));
+
+        let mutations = grid.build_mutations("users");
+        assert_eq!(mutations.len(), 1);
+        let RowMutation::Delete { table, key } = &mutations[0] else {
+            panic!("expected a delete mutation");
+        };
+        assert_eq!(table, "users");
+        assert_eq!(
+            *key,
+            RowKey::PrimaryKey(vec![KeyPart {
+                column: "id".to_string(),
+                value: Value::Integer(1),
+            }])
+        );
+
+        // Toggling again clears the mark.
+        grid.toggle_delete(0);
+        assert!(!grid.is_pending_delete(0));
+        assert!(grid.build_mutations("users").is_empty());
     }
 
     #[test]
@@ -1399,8 +1492,11 @@ mod tests {
 
         let mutations = grid.build_mutations("people");
         assert_eq!(mutations.len(), 1);
+        let RowMutation::Update { key, .. } = &mutations[0] else {
+            panic!("expected an update mutation");
+        };
         assert_eq!(
-            mutations[0].key,
+            *key,
             RowKey::FullRow(vec![
                 KeyPart {
                     column: "name".to_string(),

@@ -12,13 +12,14 @@ Some of the features are the following:
 
 - Navigate the tables with a fuzzy finder.
 - Fast querying/ordering by just writing the condition on the top pane.
-- Transactional edit in the grid view of tables.
+- Transactional edit and removal in the grid view of tables.
 - Copying cells or rows (as json) to the clipboard.
 - Simple autocompletion for table names and columns.
+- Inspecting a row or cell with proper formatting (json, timestamps, etc).
 
 ## Installation
 
-Currently the application is not uploaded to crates.io, so you can install from this repo with `cargo install --git https://github.com/Alexrp02/normal-sql.git`.
+The application is not uploaded to crates.io yet, so you can install from this repo with `cargo install --git https://github.com/Alexrp02/normal-sql.git`.
 
 ## Usage
 

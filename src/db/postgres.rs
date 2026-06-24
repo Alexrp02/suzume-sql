@@ -13,7 +13,7 @@ use bytes::BytesMut;
 use postgres::types::{IsNull, ToSql, Type, to_sql_checked};
 use postgres::{Client, NoTls, SimpleQueryMessage, Transaction};
 
-use crate::db::query::{Dialect, ParamStatement, SelectQuery, build_update};
+use crate::db::query::{Dialect, ParamStatement, SelectQuery, build_statement};
 use crate::db::{DatabaseEngine, RAW_ROW_CAP, RawResult};
 use crate::error::DbError;
 use crate::model::delta::RowMutation;
@@ -139,15 +139,15 @@ impl DatabaseEngine for PostgresEngine {
             .transaction()
             .map_err(|e| DbError::Commit(e.to_string()))?;
         for mutation in mutations {
-            let table_meta = catalog.find(&mutation.table).ok_or_else(|| {
-                DbError::Commit(format!("unknown table `{}`", mutation.table))
+            let table_meta = catalog.find(mutation.table()).ok_or_else(|| {
+                DbError::Commit(format!("unknown table `{}`", mutation.table()))
             })?;
-            let stmt = build_update(Dialect::Postgres, table_meta, mutation);
-            let affected = exec_update(&mut tx, &stmt)?;
+            let stmt = build_statement(Dialect::Postgres, table_meta, mutation);
+            let affected = exec_statement(&mut tx, &stmt)?;
             if stmt.requires_single_row_check && affected != 1 {
                 // Dropping `tx` without commit rolls the whole batch back.
-                return Err(DbError::AmbiguousUpdate {
-                    table: mutation.table.clone(),
+                return Err(DbError::AmbiguousMatch {
+                    table: mutation.table().to_string(),
                     matched: affected,
                 });
             }
@@ -204,7 +204,7 @@ impl PostgresEngine {
     }
 }
 
-fn exec_update(tx: &mut Transaction<'_>, stmt: &ParamStatement) -> Result<u64, DbError> {
+fn exec_statement(tx: &mut Transaction<'_>, stmt: &ParamStatement) -> Result<u64, DbError> {
     let params: Vec<&(dyn ToSql + Sync)> =
         stmt.params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
     tx.execute(&stmt.sql, &params)

@@ -45,8 +45,8 @@ pub enum DbError {
     Query(String),
     #[error("commit failed: {0}")]
     Commit(String),
-    /// A `FullRow` fallback update matched more than one row; the engine rolled
-    /// back to avoid mutating unintended rows.
-    #[error("update for table `{table}` matched {matched} rows (expected 1); rolled back")]
-    AmbiguousUpdate { table: String, matched: u64 },
+    /// A `FullRow` fallback update or delete matched more than one row; the
+    /// engine rolled back to avoid touching unintended rows.
+    #[error("row match for table `{table}` matched {matched} rows (expected 1); rolled back")]
+    AmbiguousMatch { table: String, matched: u64 },
 }

@@ -3,7 +3,7 @@
 use rusqlite::types::{ToSqlOutput, Value as SqliteValue, ValueRef};
 use rusqlite::{Connection, ToSql, params_from_iter};
 
-use crate::db::query::{Dialect, SelectQuery, build_update};
+use crate::db::query::{Dialect, SelectQuery, build_statement};
 use crate::db::{DatabaseEngine, RAW_ROW_CAP, RawResult};
 use crate::error::DbError;
 use crate::model::delta::RowMutation;
@@ -128,17 +128,17 @@ impl DatabaseEngine for SqliteEngine {
             .transaction()
             .map_err(|e| DbError::Commit(e.to_string()))?;
         for mutation in mutations {
-            let table_meta = catalog.find(&mutation.table).ok_or_else(|| {
-                DbError::Commit(format!("unknown table `{}`", mutation.table))
+            let table_meta = catalog.find(mutation.table()).ok_or_else(|| {
+                DbError::Commit(format!("unknown table `{}`", mutation.table()))
             })?;
-            let stmt = build_update(Dialect::Sqlite, table_meta, mutation);
+            let stmt = build_statement(Dialect::Sqlite, table_meta, mutation);
             let affected = tx
                 .execute(&stmt.sql, params_from_iter(&stmt.params))
                 .map_err(|e| DbError::Commit(e.to_string()))?;
             if stmt.requires_single_row_check && affected != 1 {
                 // Dropping `tx` without commit rolls the whole batch back.
-                return Err(DbError::AmbiguousUpdate {
-                    table: mutation.table.clone(),
+                return Err(DbError::AmbiguousMatch {
+                    table: mutation.table().to_string(),
                     matched: affected as u64,
                 });
             }
@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(rows[0][0], Value::Integer(2)); // DESC: id 2 first
 
         // Commit a primary-key update.
-        let mutation = RowMutation {
+        let mutation = RowMutation::Update {
             table: "users".to_string(),
             key: RowKey::PrimaryKey(vec![KeyPart {
                 column: "id".to_string(),
@@ -315,7 +315,7 @@ mod tests {
             .expect("seed");
         let catalog = engine.harvest_schema().expect("harvest");
 
-        let mutation = RowMutation {
+        let mutation = RowMutation::Update {
             table: "logs".to_string(),
             key: RowKey::FullRow(vec![KeyPart {
                 column: "msg".to_string(),
@@ -330,7 +330,7 @@ mod tests {
         let result = engine.commit(&[mutation], &catalog);
         assert!(matches!(
             result,
-            Err(crate::error::DbError::AmbiguousUpdate { matched: 2, .. })
+            Err(crate::error::DbError::AmbiguousMatch { matched: 2, .. })
         ));
 
         // Rolled back: both rows untouched.
@@ -339,5 +339,36 @@ mod tests {
             .expect("verify");
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r[0] == Value::Text("dup".to_string())));
+    }
+
+    #[test]
+    fn delete_by_primary_key_round_trips() {
+        let mut engine = SqliteEngine::connect(":memory:").expect("open in-memory db");
+        engine
+            .conn
+            .execute_batch(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);\
+                 INSERT INTO users VALUES (1, 'Alejandro'), (2, 'John');",
+            )
+            .expect("seed");
+        let catalog = engine.harvest_schema().expect("harvest");
+
+        let mutation = RowMutation::Delete {
+            table: "users".to_string(),
+            key: RowKey::PrimaryKey(vec![KeyPart {
+                column: "id".to_string(),
+                value: Value::Integer(1),
+            }]),
+        };
+        engine.commit(&[mutation], &catalog).expect("commit delete");
+
+        // Only the unmarked row remains.
+        let rows = engine
+            .run_select(&select_all("users", &["id", "name"], None, None))
+            .expect("verify");
+        assert_eq!(rows, vec![vec![
+            Value::Integer(2),
+            Value::Text("John".to_string()),
+        ]]);
     }
 }

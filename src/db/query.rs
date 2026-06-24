@@ -4,7 +4,7 @@
 //! the execution-ready statement here from the cached schema plus the user's
 //! filter/order fragments and the pending delta queue.
 
-use crate::model::delta::{RowKey, RowMutation};
+use crate::model::delta::{CellDelta, RowKey, RowMutation};
 use crate::model::schema::TableMeta;
 use crate::model::value::Value;
 
@@ -95,50 +95,122 @@ pub struct ParamStatement {
     pub requires_single_row_check: bool,
 }
 
-/// Compile a single-row UPDATE for the given mutation.
+/// Compile a single-row UPDATE or DELETE for the given mutation.
 ///
 /// SQLite uses positional `?` placeholders and relies on column affinity.
 /// Postgres uses `$n` placeholders and casts each bind back to the column's
 /// declared type (we bind text, the server casts), so type safety is preserved
 /// without OID juggling. We specify the data comes in text and then the cast we want.
-pub fn build_update(
+pub fn build_statement(
     dialect: Dialect,
     table_meta: &TableMeta,
     mutation: &RowMutation,
 ) -> ParamStatement {
+    match mutation {
+        RowMutation::Update {
+            table,
+            key,
+            changes,
+        } => build_update(dialect, table_meta, table, key, changes),
+        RowMutation::Delete { table, key } => build_delete(dialect, table_meta, table, key),
+    }
+}
+
+fn build_update(
+    dialect: Dialect,
+    table_meta: &TableMeta,
+    table: &str,
+    key: &RowKey,
+    changes: &[CellDelta],
+) -> ParamStatement {
     let mut params: Vec<Value> = Vec::new();
     let mut next_index = 0usize;
 
-    let placeholder = |dialect: Dialect, column: &str, value: Value, params: &mut Vec<Value>, idx: &mut usize| -> String {
-        *idx += 1;
-        params.push(value);
-        match dialect {
-            // SQLite and MySQL use positional `?` placeholders; values are bound
-            // directly and the server coerces to the column type.
-            Dialect::Sqlite | Dialect::Mysql => "?".to_string(),
-            Dialect::Postgres => {
-                let cast = table_meta
-                    .column(column)
-                    .map(|c| c.declared_type.as_str())
-                    .unwrap_or("text");
-                format!("${}::text::{cast}", *idx)
-            }
-        }
-    };
-
-    // SET clause.
-    let set_clause = mutation
-        .changes
+    let set_clause = changes
         .iter()
         .map(|c| {
-            let ph = placeholder(dialect, &c.column, c.new.clone(), &mut params, &mut next_index);
+            let ph = placeholder(dialect, table_meta, &c.column, c.new.clone(), &mut params, &mut next_index);
             format!("{} = {ph}", dialect.quote_ident(&c.column))
         })
         .collect::<Vec<_>>()
         .join(", ");
 
-    // WHERE clause from the row key. NULL key parts become `IS NULL` (no bind).
-    let (key_parts, requires_single_row_check) = match &mutation.key {
+    let (where_clause, requires_single_row_check) =
+        compile_where(dialect, table_meta, key, &mut params, &mut next_index);
+
+    let sql = format!(
+        "UPDATE {} SET {set_clause} WHERE {where_clause}",
+        dialect.quote_ident(table)
+    );
+
+    ParamStatement {
+        sql,
+        params,
+        requires_single_row_check,
+    }
+}
+
+fn build_delete(
+    dialect: Dialect,
+    table_meta: &TableMeta,
+    table: &str,
+    key: &RowKey,
+) -> ParamStatement {
+    let mut params: Vec<Value> = Vec::new();
+    let mut next_index = 0usize;
+
+    let (where_clause, requires_single_row_check) =
+        compile_where(dialect, table_meta, key, &mut params, &mut next_index);
+
+    let sql = format!(
+        "DELETE FROM {} WHERE {where_clause}",
+        dialect.quote_ident(table)
+    );
+
+    ParamStatement {
+        sql,
+        params,
+        requires_single_row_check,
+    }
+}
+
+/// Emit a placeholder for one bound value, recording it in `params`. Postgres
+/// pins the bind to text then casts to the column's declared type.
+fn placeholder(
+    dialect: Dialect,
+    table_meta: &TableMeta,
+    column: &str,
+    value: Value,
+    params: &mut Vec<Value>,
+    idx: &mut usize,
+) -> String {
+    *idx += 1;
+    params.push(value);
+    match dialect {
+        // SQLite and MySQL use positional `?` placeholders; values are bound
+        // directly and the server coerces to the column type.
+        Dialect::Sqlite | Dialect::Mysql => "?".to_string(),
+        Dialect::Postgres => {
+            let cast = table_meta
+                .column(column)
+                .map(|c| c.declared_type.as_str())
+                .unwrap_or("text");
+            format!("${}::text::{cast}", *idx)
+        }
+    }
+}
+
+/// Compile the `WHERE` clause locating a row from its key. NULL key parts become
+/// `IS NULL` (no bind). Returns the clause and whether the engine must verify
+/// exactly one row was affected (true for a full-row fallback match).
+fn compile_where(
+    dialect: Dialect,
+    table_meta: &TableMeta,
+    key: &RowKey,
+    params: &mut Vec<Value>,
+    idx: &mut usize,
+) -> (String, bool) {
+    let (key_parts, requires_single_row_check) = match key {
         RowKey::PrimaryKey(parts) => (parts, false),
         RowKey::FullRow(parts) => (parts, true),
     };
@@ -151,10 +223,11 @@ pub fn build_update(
             } else {
                 let ph = placeholder(
                     dialect,
+                    table_meta,
                     &part.column,
                     part.value.clone(),
-                    &mut params,
-                    &mut next_index,
+                    params,
+                    idx,
                 );
                 format!("{} = {ph}", dialect.quote_ident(&part.column))
             }
@@ -162,16 +235,7 @@ pub fn build_update(
         .collect::<Vec<_>>()
         .join(" AND ");
 
-    let sql = format!(
-        "UPDATE {} SET {set_clause} WHERE {where_clause}",
-        dialect.quote_ident(&mutation.table)
-    );
-
-    ParamStatement {
-        sql,
-        params,
-        requires_single_row_check,
-    }
+    (where_clause, requires_single_row_check)
 }
 
 #[cfg(test)]
@@ -235,7 +299,7 @@ mod tests {
 
     #[test]
     fn build_update_sqlite_uses_primary_key() {
-        let mutation = RowMutation {
+        let mutation = RowMutation::Update {
             table: "users".to_string(),
             key: RowKey::PrimaryKey(vec![KeyPart {
                 column: "id".to_string(),
@@ -247,7 +311,7 @@ mod tests {
                 new: Value::Text("new@x".to_string()),
             }],
         };
-        let stmt = build_update(Dialect::Sqlite, &users_meta(), &mutation);
+        let stmt = build_statement(Dialect::Sqlite, &users_meta(), &mutation);
         assert_eq!(stmt.sql, r#"UPDATE "users" SET "email" = ? WHERE "id" = ?"#);
         assert_eq!(
             stmt.params,
@@ -257,10 +321,51 @@ mod tests {
     }
 
     #[test]
+    fn build_delete_sqlite_uses_primary_key() {
+        let mutation = RowMutation::Delete {
+            table: "users".to_string(),
+            key: RowKey::PrimaryKey(vec![KeyPart {
+                column: "id".to_string(),
+                value: Value::Integer(42),
+            }]),
+        };
+        let stmt = build_statement(Dialect::Sqlite, &users_meta(), &mutation);
+        assert_eq!(stmt.sql, r#"DELETE FROM "users" WHERE "id" = ?"#);
+        assert_eq!(stmt.params, vec![Value::Integer(42)]);
+        assert!(!stmt.requires_single_row_check);
+    }
+
+    #[test]
+    fn build_delete_postgres_full_row_casts_and_checks_single_row() {
+        // No primary key: every column's original value locates the row, NULLs
+        // become `IS NULL`, and the engine must verify exactly one row matched.
+        let mutation = RowMutation::Delete {
+            table: "users".to_string(),
+            key: RowKey::FullRow(vec![
+                KeyPart {
+                    column: "name".to_string(),
+                    value: Value::Text("John".to_string()),
+                },
+                KeyPart {
+                    column: "email".to_string(),
+                    value: Value::Null,
+                },
+            ]),
+        };
+        let stmt = build_statement(Dialect::Postgres, &users_meta(), &mutation);
+        assert_eq!(
+            stmt.sql,
+            r#"DELETE FROM "users" WHERE "name" = $1::text::character varying AND "email" IS NULL"#
+        );
+        assert_eq!(stmt.params, vec![Value::Text("John".to_string())]);
+        assert!(stmt.requires_single_row_check);
+    }
+
+    #[test]
     fn build_update_postgres_full_row_casts_and_is_null() {
         // A NULL key part must become `IS NULL` (no bind), and remaining parts
         // must be cast to their declared types in the right parameter order.
-        let mutation = RowMutation {
+        let mutation = RowMutation::Update {
             table: "users".to_string(),
             key: RowKey::FullRow(vec![
                 KeyPart {
@@ -282,7 +387,7 @@ mod tests {
                 new: Value::Text("set@x".to_string()),
             }],
         };
-        let stmt = build_update(Dialect::Postgres, &users_meta(), &mutation);
+        let stmt = build_statement(Dialect::Postgres, &users_meta(), &mutation);
         assert_eq!(
             stmt.sql,
             r#"UPDATE "users" SET "email" = $1::text::text WHERE "name" = $2::text::character varying AND "email" IS NULL AND "age" = $3::text::integer"#
