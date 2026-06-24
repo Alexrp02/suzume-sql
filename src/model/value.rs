@@ -100,6 +100,23 @@ impl Value {
         }
     }
 
+    /// Convert to a JSON value, preserving the typed shape where known
+    /// (numbers/booleans/null stay native; text stays a string).
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::Value as Json;
+        match self {
+            Value::Null => Json::Null,
+            Value::Integer(n) => Json::from(*n),
+            // Non-finite floats have no JSON representation; fall back to null.
+            Value::Real(f) => serde_json::Number::from_f64(*f)
+                .map(Json::Number)
+                .unwrap_or(Json::Null),
+            Value::Text(s) => Json::String(s.clone()),
+            Value::Boolean(b) => Json::Bool(*b),
+            Value::Blob(bytes) => Json::String(format!("<blob {} bytes>", bytes.len())),
+        }
+    }
+
     /// The text representation used both for display and as the textual SQL
     /// parameter form on engines that bind everything as text (Postgres).
     /// Returns `None` for `NULL`.
@@ -182,5 +199,17 @@ mod tests {
         assert_eq!(Value::Null.to_sql_text(), None);
         assert_eq!(Value::Integer(7).to_sql_text(), Some("7".to_string()));
         assert_eq!(Value::Boolean(false).to_sql_text(), Some("false".to_string()));
+    }
+
+    #[test]
+    fn to_json_keeps_native_shapes() {
+        assert_eq!(Value::Null.to_json(), serde_json::Value::Null);
+        assert_eq!(Value::Integer(7).to_json(), serde_json::json!(7));
+        assert_eq!(Value::Boolean(true).to_json(), serde_json::json!(true));
+        // Text with characters needing escaping round-trips correctly.
+        assert_eq!(
+            serde_json::to_string(&Value::Text("a\"b\n".to_string()).to_json()).unwrap(),
+            r#""a\"b\n""#
+        );
     }
 }

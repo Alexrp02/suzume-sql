@@ -4,6 +4,7 @@
 //! directly; all I/O happens on the worker thread (see [`worker`]).
 
 mod app;
+mod clipboard;
 mod config;
 mod db;
 mod error;

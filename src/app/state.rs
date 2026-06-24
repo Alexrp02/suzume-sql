@@ -6,6 +6,7 @@ use edtui::{EditorEventHandler, EditorState, Lines};
 
 use crate::app::editor::{CellEditor, TextInput};
 use crate::app::finder::FinderState;
+use crate::clipboard::ClipboardSink;
 use crate::config::Config;
 use crate::db::query::SelectQuery;
 use crate::model::delta::{KeyPart, CellDelta, RowKey, RowMutation};
@@ -171,6 +172,25 @@ impl GridView {
 
     pub fn has_pending(&self) -> bool {
         !self.overlay.is_empty()
+    }
+
+    /// Serialize a row to a compact JSON object using the displayed values
+    /// (pending edits included). Keys preserve column order. Returns `None` if
+    /// the row index is out of range or serialization fails.
+    pub fn row_json(&self, row: usize) -> Option<String> {
+        if row >= self.row_count() {
+            return None;
+        }
+        // `preserve_order` keeps the map in column order.
+        let mut object = serde_json::Map::with_capacity(self.columns.len());
+        for (col, column) in self.columns.iter().enumerate() {
+            let value = self
+                .display_value(row, col)
+                .cloned()
+                .unwrap_or(Value::Null);
+            object.insert(column.name.clone(), value.to_json());
+        }
+        serde_json::to_string(&serde_json::Value::Object(object)).ok()
     }
 
     /// Record an edit at `(row, col)`. Re-setting a cell to its original value
@@ -380,6 +400,10 @@ pub struct App {
     pub pending: Option<PendingOp>,
     pub spinner_frame: usize,
     pub should_quit: bool,
+    /// System clipboard sink for yanking (degrades to a no-op if unavailable).
+    pub clipboard: ClipboardSink,
+    /// The most recent yanked text, kept as an in-app register/fallback.
+    pub last_yank: Option<String>,
     select_seq: u64,
     latest_select_id: u64,
 }
@@ -399,6 +423,8 @@ impl App {
             pending: None,
             spinner_frame: 0,
             should_quit: false,
+            clipboard: ClipboardSink::new(),
+            last_yank: None,
             select_seq: 0,
             latest_select_id: 0,
         };
@@ -700,6 +726,45 @@ impl App {
         self.info(format!("Committing {count} row(s)..."));
     }
 
+    /// Yank the selected cell's displayed value to the clipboard/register.
+    pub fn yank_cell(&mut self) {
+        let grid = &self.browser.grid;
+        if grid.row_count() == 0 || grid.col_count() == 0 {
+            self.info("Nothing to yank");
+            return;
+        }
+        let text = grid
+            .display_value(grid.sel_row, grid.sel_col)
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        self.yank(text, "cell");
+    }
+
+    /// Yank the selected row as a JSON object to the clipboard/register.
+    pub fn yank_row(&mut self) {
+        let grid = &self.browser.grid;
+        if grid.row_count() == 0 || grid.col_count() == 0 {
+            self.info("Nothing to yank");
+            return;
+        }
+        match grid.row_json(grid.sel_row) {
+            Some(json) => self.yank(json, "row (json)"),
+            None => self.error("Could not serialize row"),
+        }
+    }
+
+    /// Common yank path: record the value and best-effort copy to the clipboard.
+    fn yank(&mut self, text: String, label: &str) {
+        let copied = self.clipboard.copy(&text);
+        let preview = yank_preview(&text);
+        self.last_yank = Some(text);
+        if copied {
+            self.info(format!("Yanked {label} → clipboard: {preview}"));
+        } else {
+            self.info(format!("Yanked {label} (no clipboard): {preview}"));
+        }
+    }
+
     /// Discard all pending edits.
     pub fn discard_pending(&mut self) {
         if self.browser.grid.has_pending() {
@@ -726,6 +791,20 @@ fn non_empty(text: &str) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+/// A short, single-line preview of yanked text for the status line.
+fn yank_preview(text: &str) -> String {
+    let one_line: String = text
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .collect();
+    if one_line.chars().count() > 40 {
+        let head: String = one_line.chars().take(39).collect();
+        format!("{head}…")
+    } else {
+        one_line
     }
 }
 
@@ -772,6 +851,25 @@ mod tests {
         assert_eq!(m.changes.len(), 1);
         assert_eq!(m.changes[0].original, Value::Text("a@x".to_string()));
         assert_eq!(m.changes[0].new, Value::Text("new@x".to_string()));
+    }
+
+    #[test]
+    fn row_json_preserves_column_order_and_types() {
+        let mut grid = GridView::new(
+            vec![col("id", true), col("name", false), col("active", false)],
+            false,
+        );
+        grid.set_rows(vec![vec![
+            Value::Integer(7),
+            Value::Text("Mara".to_string()),
+            Value::Boolean(true),
+        ]]);
+        // A pending edit should be reflected in the yanked JSON.
+        grid.record_edit(0, 1, Value::Null);
+
+        let json = grid.row_json(0).expect("json");
+        assert_eq!(json, r#"{"id":7,"name":null,"active":true}"#);
+        assert!(grid.row_json(5).is_none());
     }
 
     #[test]
@@ -825,6 +923,8 @@ mod tests {
             pending: Some(PendingOp::Select),
             spinner_frame: 3,
             should_quit: false,
+            clipboard: ClipboardSink::disabled(),
+            last_yank: None,
             select_seq: 0,
             latest_select_id: 0,
         };
@@ -862,6 +962,8 @@ mod tests {
             pending: None,
             spinner_frame: 0,
             should_quit: false,
+            clipboard: ClipboardSink::disabled(),
+            last_yank: None,
             select_seq: 0,
             latest_select_id: 0,
         };
@@ -903,6 +1005,8 @@ mod tests {
             pending: None,
             spinner_frame: 0,
             should_quit: false,
+            clipboard: ClipboardSink::disabled(),
+            last_yank: None,
             select_seq: 0,
             latest_select_id: 0,
         };

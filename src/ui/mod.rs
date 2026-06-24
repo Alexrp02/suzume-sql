@@ -298,7 +298,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     spans.push(Span::styled(
-        "   [1-4 panes · / find · i edit · Ctrl+R run · q quit]",
+        "   [1-4 panes · / find · i edit · y/Y yank · Ctrl+R run · q quit]",
         Style::default().fg(Color::DarkGray),
     ));
 

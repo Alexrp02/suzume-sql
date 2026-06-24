@@ -186,6 +186,8 @@ fn handle_data(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') => app.browser.grid.goto_bottom(),
         KeyCode::Char('i') | KeyCode::Enter => begin_cell_edit(app),
         KeyCode::Char('u') => app.discard_pending(),
+        KeyCode::Char('y') => app.yank_cell(),
+        KeyCode::Char('Y') => app.yank_row(),
         KeyCode::Char('/') => app.open_finder(),
         _ => {}
     }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arboard = { version = "3.6.1", default-features = false }
 crossterm = "0.29.0"
 # Vim-style text editor widget for the query pane. Default features pull in
 # clipboard (arboard → X11/image) and syntect; we only need the keyboard editor.
@@ -13,5 +14,6 @@ postgres = "0.19.14"
 ratatui = "0.30.1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
 thiserror = "2.0.18"
 toml = "1.1.2"
