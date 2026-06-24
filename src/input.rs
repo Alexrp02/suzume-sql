@@ -216,6 +216,7 @@ fn handle_catalog(app: &mut App, key: KeyEvent) {
             app.browser.sidebar.selected = app.browser.sidebar.selected.saturating_sub(1);
         }
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.open_sidebar_selection(),
+        KeyCode::Char('R') => app.refresh_schema(),
         KeyCode::Char('/') => app.open_finder(),
         _ => {}
     }

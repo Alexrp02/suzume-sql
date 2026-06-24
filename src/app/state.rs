@@ -22,6 +22,7 @@ pub const ROW_LIMIT: u32 = 100;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingOp {
     Schema,
+    SchemaRefresh,
     Select,
     Commit,
 }
@@ -30,6 +31,7 @@ impl PendingOp {
     pub fn label(&self) -> &'static str {
         match self {
             PendingOp::Schema => "Loading schema",
+            PendingOp::SchemaRefresh => "Refreshing schema",
             PendingOp::Select => "Running query",
             PendingOp::Commit => "Committing",
         }
@@ -527,9 +529,10 @@ impl App {
                 self.pending = Some(PendingOp::Schema);
                 self.info("Connected. Loading schema...");
             }
-            WorkerResponse::Schema(catalog) => {
-                self.on_schema(catalog);
-            }
+            WorkerResponse::Schema(catalog) => match self.pending {
+                Some(PendingOp::SchemaRefresh) => self.on_schema_refresh(catalog),
+                _ => self.on_schema(catalog),
+            },
             WorkerResponse::Rows { id, rows } => {
                 if id == self.latest_select_id {
                     self.pending = None;
@@ -579,6 +582,36 @@ impl App {
             // Auto-load the first relation and focus the grid.
             self.open_sidebar_selection();
         }
+    }
+
+    /// Re-harvest the schema from the database while keeping the current view.
+    /// Reuses the same worker request as the initial connect, but the response
+    /// is applied non-destructively (see [`Self::on_schema_refresh`]).
+    pub fn refresh_schema(&mut self) {
+        self.send(WorkerRequest::HarvestSchema);
+        self.pending = Some(PendingOp::SchemaRefresh);
+        self.info("Refreshing schema...");
+    }
+
+    /// Apply a refreshed catalog without disturbing what the user is looking at:
+    /// the loaded table, grid (and its pending edits), query and focus are all
+    /// preserved. Only the catalog (used by completion) and the sidebar list are
+    /// updated, keeping the highlight on the same relation when it still exists.
+    fn on_schema_refresh(&mut self, catalog: Catalog) {
+        let selected_name = self
+            .browser
+            .sidebar
+            .names
+            .get(self.browser.sidebar.selected)
+            .cloned();
+        let names: Vec<String> = catalog.tables.iter().map(|t| t.name.clone()).collect();
+        self.catalog = catalog;
+        self.browser.sidebar.selected = selected_name
+            .and_then(|name| names.iter().position(|n| *n == name))
+            .unwrap_or(0);
+        self.browser.sidebar.names = names;
+        self.pending = None;
+        self.info("Schema refreshed");
     }
 
     /// Load the relation currently highlighted in the sidebar into the grid.
