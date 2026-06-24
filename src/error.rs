@@ -24,6 +24,14 @@ pub enum ConfigError {
     Empty,
     #[error("no connection named `{0}` is defined in the config")]
     UnknownConnection(String),
+    #[error(
+        "unsupported database engine in connection string: `{scheme}`\n\n\
+         supported engines and connection string formats:\n  \
+         sqlite     sqlite://<path>                       (e.g. sqlite://./demo.db)\n  \
+         postgres   postgresql://user:pass@host:port/db\n  \
+         mysql      mysql://user:pass@host:port/db"
+    )]
+    UnsupportedEngine { scheme: String },
 }
 
 /// Errors raised by a concrete database engine while talking to the backend.

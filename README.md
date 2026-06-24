@@ -22,7 +22,16 @@ Currently the application is not uploaded to crates.io, so you can install from 
 
 ## Usage
 
-By default, normal-sql looks for `normal-sql.toml` in the current working directory. Use -c/--config <path> to point it elsewhere.
+The first argument is a connection. If it carries a `scheme://` prefix it is used as a direct connection string (bypassing the config file); otherwise it is a connection name looked up in the config file:
+
+```sh
+normal-sql local                                      # connection named "local" in the config
+normal-sql sqlite://./demo.db                         # sqlite (the sqlite:// prefix is required)
+normal-sql postgresql://user:pass@localhost:5432/app  # postgres
+normal-sql mysql://user:pass@localhost:3306/app       # mysql
+```
+
+With no argument, normal-sql looks for `normal-sql.toml` in the current working directory (use -c/--config <path> to point it elsewhere). If the config defines more than one connection, an interactive picker is shown.
 
 This is an example of a configuration file:
 

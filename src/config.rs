@@ -48,6 +48,27 @@ impl ConnectionConfig {
             ConnectionConfig::Mysql { url } => url,
         }
     }
+
+    /// Parse a CLI connection string into a backend config. The engine is taken
+    /// from the `scheme://` prefix; every engine, SQLite included, requires one.
+    pub fn parse(spec: &str) -> Result<ConnectionConfig, ConfigError> {
+        let spec = spec.trim();
+        let (scheme, rest) = spec.split_once("://").unwrap_or((spec, ""));
+        match scheme {
+            "postgres" | "postgresql" => Ok(ConnectionConfig::Postgres {
+                url: spec.to_string(),
+            }),
+            "mysql" => Ok(ConnectionConfig::Mysql {
+                url: spec.to_string(),
+            }),
+            "sqlite" | "sqlite3" => Ok(ConnectionConfig::Sqlite {
+                path: rest.to_string(),
+            }),
+            other => Err(ConfigError::UnsupportedEngine {
+                scheme: other.to_string(),
+            }),
+        }
+    }
 }
 
 /// A named connection entry.
@@ -82,13 +103,27 @@ impl Config {
         Ok(config)
     }
 
-    /// Look up a connection by name.
-    pub fn connection(&self, name: &str) -> Result<&NamedConnection, ConfigError> {
+    /// Reduce the config to just the connection named `name`, if present, so it
+    /// connects directly instead of opening the picker.
+    pub fn select(self, name: &str) -> Option<Config> {
         self.connections
-            .iter()
+            .into_iter()
             .find(|c| c.name == name)
-            .ok_or_else(|| ConfigError::UnknownConnection(name.to_string()))
+            .map(|connection| Config {
+                connections: vec![connection],
+            })
     }
+
+    /// Build a single-connection config from a CLI connection string, bypassing
+    /// the config file entirely.
+    pub fn from_connection_string(spec: &str) -> Result<Config, ConfigError> {
+        let connection = ConnectionConfig::parse(spec)?;
+        let name = connection.engine_label().to_string();
+        Ok(Config {
+            connections: vec![NamedConnection { name, connection }],
+        })
+    }
+
 }
 
 #[cfg(test)]
@@ -120,7 +155,73 @@ mod tests {
             }
             other => panic!("expected postgres, got {other:?}"),
         }
-        assert_eq!(config.connection("prod").expect("found").name, "prod");
-        assert!(config.connection("missing").is_err());
+    }
+
+    #[test]
+    fn parses_connection_strings_by_scheme() {
+        match ConnectionConfig::parse("postgresql://u:p@localhost:5432/app").expect("postgres") {
+            ConnectionConfig::Postgres { url } => {
+                assert_eq!(url, "postgresql://u:p@localhost:5432/app")
+            }
+            other => panic!("expected postgres, got {other:?}"),
+        }
+        match ConnectionConfig::parse("postgres://u:p@localhost/app").expect("postgres alias") {
+            ConnectionConfig::Postgres { .. } => {}
+            other => panic!("expected postgres, got {other:?}"),
+        }
+        match ConnectionConfig::parse("mysql://u:p@localhost:3306/app").expect("mysql") {
+            ConnectionConfig::Mysql { url } => assert_eq!(url, "mysql://u:p@localhost:3306/app"),
+            other => panic!("expected mysql, got {other:?}"),
+        }
+        // SQLite requires the sqlite:// scheme, which is stripped to a path.
+        match ConnectionConfig::parse("sqlite://./demo.db").expect("sqlite scheme") {
+            ConnectionConfig::Sqlite { path } => assert_eq!(path, "./demo.db"),
+            other => panic!("expected sqlite, got {other:?}"),
+        }
+        match ConnectionConfig::parse("sqlite://:memory:").expect("sqlite memory") {
+            ConnectionConfig::Sqlite { path } => assert_eq!(path, ":memory:"),
+            other => panic!("expected sqlite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_reduces_to_a_single_named_connection() {
+        let config = Config {
+            connections: vec![
+                NamedConnection {
+                    name: "a".to_string(),
+                    connection: ConnectionConfig::Sqlite {
+                        path: "a.db".to_string(),
+                    },
+                },
+                NamedConnection {
+                    name: "b".to_string(),
+                    connection: ConnectionConfig::Sqlite {
+                        path: "b.db".to_string(),
+                    },
+                },
+            ],
+        };
+        let selected = config.clone().select("b").expect("found");
+        assert_eq!(selected.connections.len(), 1);
+        assert_eq!(selected.connections[0].name, "b");
+        assert!(config.select("missing").is_none());
+    }
+
+    #[test]
+    fn rejects_unknown_engine_scheme() {
+        match ConnectionConfig::parse("redis://localhost:6379") {
+            Err(ConfigError::UnsupportedEngine { scheme }) => assert_eq!(scheme, "redis"),
+            other => panic!("expected unsupported engine error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_schemeless_connection_string() {
+        // A bare path is no longer a SQLite string; it has no recognized scheme.
+        match ConnectionConfig::parse("./demo.db") {
+            Err(ConfigError::UnsupportedEngine { scheme }) => assert_eq!(scheme, "./demo.db"),
+            other => panic!("expected unsupported engine error, got {other:?}"),
+        }
     }
 }

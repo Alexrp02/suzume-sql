@@ -435,9 +435,9 @@ pub struct App {
 }
 
 impl App {
-    /// Build the app for `config`, honouring an optional pre-selected
-    /// connection name (e.g. from the command line).
-    pub fn new(config: Config, preselect: Option<String>) -> App {
+    /// Build the app for `config`. A single-connection config connects
+    /// immediately; multiple connections open the picker.
+    pub fn new(config: Config) -> App {
         let mut app = App {
             config,
             screen: Screen::Picker { selected: 0 },
@@ -455,24 +455,8 @@ impl App {
             latest_select_id: 0,
         };
 
-        match preselect {
-            Some(name) => match app.config.connection(&name) {
-                Ok(_) => {
-                    let index = app
-                        .config
-                        .connections
-                        .iter()
-                        .position(|c| c.name == name)
-                        .unwrap_or(0);
-                    app.start_connection(index);
-                }
-                Err(e) => app.screen = Screen::Fatal(e.to_string()),
-            },
-            None => {
-                if app.config.connections.len() == 1 {
-                    app.start_connection(0);
-                }
-            }
+        if app.config.connections.len() == 1 {
+            app.start_connection(0);
         }
         app
     }

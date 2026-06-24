@@ -20,12 +20,15 @@ use ratatui::crossterm::event::{self, Event};
 
 use crate::app::state::App;
 use crate::config::Config;
+use crate::error::ConfigError;
 
 const DEFAULT_CONFIG: &str = "normal-sql.toml";
 const TICK: Duration = Duration::from_millis(120);
 
 struct Args {
     config_path: String,
+    /// The positional argument: a `scheme://` connection string, or otherwise a
+    /// connection name to look up in the config.
     connection: Option<String>,
 }
 
@@ -38,19 +41,39 @@ fn main() {
         }
     };
 
-    let config = match Config::load(&args.config_path) {
+    let config = match resolve_config(&args) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("normal-sql: {e}");
-            eprintln!("(expected a config file at `{}`)", args.config_path);
+            if let ConfigError::Read { .. } = e {
+                eprintln!("(expected a config file at `{}`)", args.config_path);
+            }
             std::process::exit(1);
         }
     };
 
-    let app = App::new(config, args.connection);
+    let app = App::new(config);
     if let Err(e) = run(app) {
         eprintln!("normal-sql: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Resolve the connection to open. An argument carrying a `scheme://` prefix is
+/// a direct connection string; any other argument is a connection name looked
+/// up in the config file. With no argument, the config file is loaded as a
+/// whole (single connection auto-connects, multiple show the picker).
+fn resolve_config(args: &Args) -> Result<Config, ConfigError> {
+    let Some(spec) = &args.connection else {
+        return Config::load(&args.config_path);
+    };
+
+    if spec.contains("://") {
+        Config::from_connection_string(spec)
+    } else {
+        Config::load(&args.config_path)?
+            .select(spec)
+            .ok_or_else(|| ConfigError::UnknownConnection(spec.clone()))
     }
 }
 
@@ -115,13 +138,25 @@ fn parse_args() -> ParseOutcome {
 
 fn print_help() {
     println!(
-        "normal-sql — table-first terminal database client\n\n\
-         USAGE:\n    \
-         normal-sql [--config <path>] [connection-name]\n\n\
-         OPTIONS:\n    \
-         -c, --config <path>   Path to the TOML config (default: {DEFAULT_CONFIG})\n    \
-         -h, --help            Show this help\n\n\
-         If [connection-name] is omitted and the config has more than one\n\
-         connection, an interactive picker is shown.\n"
+        r#"normal-sql — table-first terminal database client
+
+USAGE:
+    normal-sql [connection]
+    normal-sql [--config <path>]
+
+ARGS:
+    [connection]   A connection string (identified by its scheme://), or
+                   otherwise a connection name from the config file:
+        sqlite     sqlite://<path>                       (e.g. sqlite://./demo.db)
+        postgres   postgresql://user:pass@host:port/db
+        mysql      mysql://user:pass@host:port/db
+
+OPTIONS:
+    -c, --config <path>   Path to the TOML config (default: {DEFAULT_CONFIG})
+    -h, --help            Show this help
+
+With no argument, the config file is loaded; if it defines more than one
+connection, an interactive picker is shown.
+"#
     );
 }
