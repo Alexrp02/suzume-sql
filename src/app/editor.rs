@@ -83,6 +83,22 @@ impl TextInput {
     pub fn end(&mut self) {
         self.cursor = self.chars.len();
     }
+
+    /// Replace the half-open char range `[start, cursor)` with `text`, leaving
+    /// the cursor at the end of the inserted text. Used to apply a completion in
+    /// place of the prefix the user had typed.
+    pub fn replace_prefix(&mut self, start: usize, text: &str) {
+        if start > self.cursor || self.cursor > self.chars.len() {
+            return;
+        }
+        self.chars.drain(start..self.cursor);
+        let inserted: Vec<char> = text.chars().collect();
+        let count = inserted.len();
+        for (offset, ch) in inserted.into_iter().enumerate() {
+            self.chars.insert(start + offset, ch);
+        }
+        self.cursor = start + count;
+    }
 }
 
 /// An in-place cell editor: the buffer plus the grid coordinates it edits.

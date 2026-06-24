@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use edtui::{EditorEventHandler, EditorState, Lines};
 
+use crate::app::completion::Completion;
 use crate::app::editor::{CellEditor, TextInput};
 use crate::app::finder::FinderState;
 use crate::clipboard::ClipboardSink;
@@ -371,6 +372,9 @@ pub struct BrowserState {
     pub loaded_table: Option<String>,
     /// True after a single `g` in grid navigation, awaiting the second `g`.
     pub awaiting_g: bool,
+    /// The open autocompletion popup, if any. Shared by the query pane and the
+    /// controls fields; only one text context is focused at a time.
+    pub completion: Option<Completion>,
 }
 
 impl BrowserState {
@@ -384,6 +388,7 @@ impl BrowserState {
             grid: GridView::empty(),
             loaded_table: None,
             awaiting_g: false,
+            completion: None,
         }
     }
 }
@@ -619,6 +624,90 @@ impl App {
         self.info("Running query...");
     }
 
+    /// Build the completion candidates for whichever text context is focused.
+    /// Returns `None` if the focus isn't a completable text field.
+    fn build_completion(&self) -> Option<Completion> {
+        match &self.browser.focus {
+            Focus::Query => Some(Completion::build(&self.browser.query.state, &self.catalog)),
+            Focus::Controls { input, .. } => Some(Completion::for_field(
+                &input.text(),
+                input.cursor(),
+                &self.catalog,
+                self.browser.loaded_table.as_deref(),
+            )),
+            _ => None,
+        }
+    }
+
+    /// Open the autocompletion popup for the focused text context. Does nothing
+    /// if there is nothing to suggest.
+    pub fn open_completion(&mut self) {
+        self.browser.completion = self.build_completion().filter(|c| !c.is_empty());
+    }
+
+    /// Move the completion selection by `delta` (down is positive).
+    pub fn move_completion(&mut self, delta: isize) {
+        if let Some(completion) = &mut self.browser.completion {
+            completion.move_selection(delta);
+        }
+    }
+
+    /// Insert the selected completion into the focused buffer and close the popup.
+    pub fn accept_completion(&mut self) {
+        let Some(completion) = self.browser.completion.take() else {
+            return;
+        };
+        match &mut self.browser.focus {
+            Focus::Query => {
+                crate::app::completion::accept(&mut self.browser.query.state, &completion);
+            }
+            Focus::Controls { input, .. } => {
+                crate::app::completion::accept_field(input, &completion);
+            }
+            _ => {}
+        }
+    }
+
+    /// Close the completion popup without inserting anything.
+    pub fn cancel_completion(&mut self) {
+        self.browser.completion = None;
+    }
+
+    /// The identifier prefix under the cursor of the focused text context, if
+    /// the focus is completable.
+    fn focused_prefix(&self) -> Option<String> {
+        match &self.browser.focus {
+            Focus::Query => Some(crate::app::completion::editor_prefix(&self.browser.query.state)),
+            Focus::Controls { input, .. } => Some(crate::app::completion::field_prefix(
+                &input.text(),
+                input.cursor(),
+            )),
+            _ => None,
+        }
+    }
+
+    /// Auto-show/refresh the popup as the user types: show it while an identifier
+    /// prefix is present under the cursor, hide it otherwise. Used by the query
+    /// pane, which completes automatically.
+    pub fn autocomplete(&mut self) {
+        let Some(prefix) = self.focused_prefix() else {
+            return;
+        };
+        self.browser.completion = if prefix.is_empty() {
+            None
+        } else {
+            self.build_completion().filter(|c| !c.is_empty())
+        };
+    }
+
+    /// Recompute the popup after a buffer edit, closing it if nothing matches.
+    pub fn refresh_completion(&mut self) {
+        if self.browser.completion.is_none() {
+            return;
+        }
+        self.browser.completion = self.build_completion().filter(|c| !c.is_empty());
+    }
+
     /// Open the fuzzy table finder over the current catalog.
     pub fn open_finder(&mut self) {
         if self.browser.sidebar.names.is_empty() {
@@ -654,6 +743,7 @@ impl App {
     /// Focus a pane by its number (1=Controls, 2=Catalog, 3=Query, 4=Data).
     pub fn focus_pane(&mut self, pane: u8) {
         self.browser.awaiting_g = false;
+        self.browser.completion = None;
         self.browser.focus = match pane {
             1 => Focus::Controls {
                 field: ControlsField::Filter,
@@ -908,6 +998,7 @@ mod tests {
             grid,
             loaded_table: Some("users".to_string()),
             awaiting_g: false,
+            completion: None,
         };
 
         let mut app = App {
@@ -957,6 +1048,55 @@ mod tests {
             worker: None,
             connection_name: "local".to_string(),
             catalog: Catalog::default(),
+            browser,
+            status: StatusLine::default(),
+            pending: None,
+            spinner_frame: 0,
+            should_quit: false,
+            clipboard: ClipboardSink::disabled(),
+            last_yank: None,
+            select_seq: 0,
+            latest_select_id: 0,
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .expect("render");
+    }
+
+    #[test]
+    fn renders_query_pane_with_open_completion() {
+        use crate::app::completion::Completion;
+        use crate::config::Config;
+        use crate::model::schema::{RelationKind, TableMeta};
+        use edtui::{Index2, Lines};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let catalog = Catalog {
+            tables: vec![TableMeta {
+                name: "users".to_string(),
+                kind: RelationKind::Table,
+                columns: vec![col("id", true), col("email", false)],
+            }],
+        };
+
+        let mut browser = BrowserState::new();
+        browser.sidebar.names = vec!["users".to_string()];
+        browser.focus = Focus::Query;
+        browser.query.state = EditorState::new(Lines::from("SELECT * FROM us"));
+        browser.query.state.cursor = Index2::new(0, 16);
+        browser.completion = Some(Completion::build(&browser.query.state, &catalog));
+
+        let mut app = App {
+            config: Config {
+                connections: Vec::new(),
+            },
+            screen: Screen::Browser,
+            worker: None,
+            connection_name: "local".to_string(),
+            catalog,
             browser,
             status: StatusLine::default(),
             pending: None,

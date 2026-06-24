@@ -88,13 +88,54 @@ fn handle_browser(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_controls(app: &mut App, key: KeyEvent) {
+    // Tab switches Filter/Order, so completion is summoned explicitly with
+    // Ctrl+Space (some terminals report it as a NUL key code).
+    if is_ctrl(&key, ' ') || key.code == KeyCode::Null {
+        app.open_completion();
+        return;
+    }
+
+    // While the completion popup is open it captures navigation/accept keys. Tab
+    // and Enter accept the candidate (rather than switching fields / applying).
+    if app.browser.completion.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                app.cancel_completion();
+                return;
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                app.accept_completion();
+                return;
+            }
+            KeyCode::Down => {
+                app.move_completion(1);
+                return;
+            }
+            KeyCode::Up => {
+                app.move_completion(-1);
+                return;
+            }
+            _ if is_ctrl(&key, 'n') => {
+                app.move_completion(1);
+                return;
+            }
+            _ if is_ctrl(&key, 'p') => {
+                app.move_completion(-1);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     // Readline-style edits first.
     if is_ctrl(&key, 'w') {
         with_controls_input(app, TextInput::delete_word);
+        app.refresh_completion();
         return;
     }
     if is_ctrl(&key, 'u') {
         with_controls_input(app, TextInput::delete_to_start);
+        app.refresh_completion();
         return;
     }
 
@@ -123,13 +164,28 @@ fn handle_controls(app: &mut App, key: KeyEvent) {
                 };
             }
         }
-        KeyCode::Backspace => with_controls_input(app, TextInput::backspace),
-        KeyCode::Delete => with_controls_input(app, TextInput::delete),
-        KeyCode::Left => with_controls_input(app, TextInput::left),
-        KeyCode::Right => with_controls_input(app, TextInput::right),
+        KeyCode::Backspace => {
+            with_controls_input(app, TextInput::backspace);
+            app.refresh_completion();
+        }
+        KeyCode::Delete => {
+            with_controls_input(app, TextInput::delete);
+            app.refresh_completion();
+        }
+        KeyCode::Left => {
+            with_controls_input(app, TextInput::left);
+            app.refresh_completion();
+        }
+        KeyCode::Right => {
+            with_controls_input(app, TextInput::right);
+            app.refresh_completion();
+        }
         KeyCode::Home => with_controls_input(app, TextInput::home),
         KeyCode::End => with_controls_input(app, TextInput::end),
-        KeyCode::Char(c) => with_controls_input(app, |input| input.insert(c)),
+        KeyCode::Char(c) => {
+            with_controls_input(app, |input| input.insert(c));
+            app.refresh_completion();
+        }
         _ => {}
     }
 }
@@ -194,6 +250,56 @@ fn handle_data(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_query(app: &mut App, key: KeyEvent) {
+    // Ctrl+Space summons the popup explicitly, e.g. to list every candidate with
+    // no prefix typed yet (some terminals report it as a NUL key code).
+    if (is_ctrl(&key, ' ') || key.code == KeyCode::Null)
+        && app.browser.query.state.mode == EditorMode::Insert
+    {
+        app.open_completion();
+        return;
+    }
+
+    // While the completion popup is open it captures navigation/accept keys;
+    // anything else (typing, backspace) falls through to edtui and then re-ranks.
+    if app.browser.completion.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                app.cancel_completion();
+                return;
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                app.accept_completion();
+                return;
+            }
+            KeyCode::Down => {
+                app.move_completion(1);
+                return;
+            }
+            KeyCode::Up => {
+                app.move_completion(-1);
+                return;
+            }
+            _ if is_ctrl(&key, 'n') => {
+                app.move_completion(1);
+                return;
+            }
+            _ if is_ctrl(&key, 'p') => {
+                app.move_completion(-1);
+                return;
+            }
+            _ => {}
+        }
+    }
+
+    // Ctrl+W deletes the previous word, matching the filter/cell editors. The
+    // vim keymap edtui uses has no insert-mode word delete, so we replay the
+    // equivalent backspaces (which edtui records for undo).
+    if is_ctrl(&key, 'w') && app.browser.query.state.mode == EditorMode::Insert {
+        delete_query_word(app);
+        app.autocomplete();
+        return;
+    }
+
     // In Normal mode the editor doesn't consume digits/Esc, so we use them for
     // pane switching and blurring. In every other mode all keys go to edtui
     // (Esc there returns to Normal).
@@ -207,8 +313,17 @@ fn handle_query(app: &mut App, key: KeyEvent) {
             return;
         }
     }
+
     let query = &mut app.browser.query;
     query.events.on_key_event(key, &mut query.state);
+
+    // The query pane completes automatically: after any edit/motion, show or
+    // refresh the popup while typing in insert mode and close it otherwise.
+    if app.browser.query.state.mode == EditorMode::Insert {
+        app.autocomplete();
+    } else {
+        app.cancel_completion();
+    }
 }
 
 fn handle_cell_edit(app: &mut App, key: KeyEvent) {
@@ -275,6 +390,45 @@ fn handle_finder(app: &mut App, key: KeyEvent) {
 
 fn is_ctrl(key: &KeyEvent, c: char) -> bool {
     key.code == KeyCode::Char(c) && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+/// Number of characters to remove to delete the word before `col`: any trailing
+/// whitespace, then the run of non-whitespace (readline `Ctrl+W` semantics,
+/// matching [`TextInput::delete_word`]).
+fn word_delete_count(line: &[char], col: usize) -> usize {
+    let end = col.min(line.len());
+    let mut start = end;
+    while start > 0 && line[start - 1].is_whitespace() {
+        start -= 1;
+    }
+    while start > 0 && !line[start - 1].is_whitespace() {
+        start -= 1;
+    }
+    end - start
+}
+
+/// Delete the word before the cursor in the query editor's current line by
+/// replaying that many backspaces, so the edit goes through edtui's own logic
+/// (and its undo history).
+fn delete_query_word(app: &mut App) {
+    let state = &app.browser.query.state;
+    let line: Vec<char> = state
+        .lines
+        .to_string()
+        .split('\n')
+        .nth(state.cursor.row)
+        .unwrap_or("")
+        .chars()
+        .collect();
+    let count = word_delete_count(&line, state.cursor.col);
+
+    let query = &mut app.browser.query;
+    for _ in 0..count {
+        query.events.on_key_event(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut query.state,
+        );
+    }
 }
 
 /// Map a bare `1`-`4` keypress to a pane number (ignoring Ctrl-modified digits).
@@ -362,4 +516,36 @@ fn finish_cell_edit(app: &mut App) {
     let value = Value::parse(&text, affinity);
     app.browser.grid.record_edit(row, col, value);
     app.browser.focus = Focus::Data;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use edtui::{EditorEventHandler, EditorMode, EditorState, Index2, Lines};
+
+    #[test]
+    fn word_delete_count_matches_readline_semantics() {
+        let line: Vec<char> = "SELECT foo".chars().collect();
+        assert_eq!(word_delete_count(&line, 10), 3); // deletes "foo"
+        assert_eq!(word_delete_count(&line, 6), 6); // deletes "SELECT"
+        assert_eq!(word_delete_count(&line, 0), 0); // nothing before the cursor
+
+        let trailing: Vec<char> = "SELECT foo  ".chars().collect();
+        assert_eq!(word_delete_count(&trailing, 12), 5); // "  " then "foo"
+    }
+
+    /// Our Ctrl+W replays plain backspaces; this guards that edtui's default
+    /// (vim) keymap actually deletes a char on Backspace in insert mode.
+    #[test]
+    fn vim_insert_backspace_deletes_a_char() {
+        let mut state = EditorState::new(Lines::from("SELECT foo"));
+        state.mode = EditorMode::Insert;
+        state.cursor = Index2::new(0, 10);
+        let mut events = EditorEventHandler::default();
+        events.on_key_event(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut state,
+        );
+        assert_eq!(state.lines.to_string(), "SELECT fo");
+    }
 }

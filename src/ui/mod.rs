@@ -9,6 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
+use crate::app::completion::{CandidateKind, Completion};
 use crate::app::editor::TextInput;
 use crate::app::finder::FinderState;
 use crate::app::state::{App, ControlsField, Focus, Screen};
@@ -63,10 +64,84 @@ fn render_browser(frame: &mut Frame, app: &mut App) {
     render_status(frame, status_area, app);
     render_query(frame, query_area, app, query_focused);
 
+    // The completion popup floats just below whichever text field is focused.
+    let completion_anchor = match active {
+        1 => Some(controls_area),
+        3 => Some(query_area),
+        _ => None,
+    };
+    if let Some(completion) = &app.browser.completion
+        && let Some(anchor) = completion_anchor
+    {
+        render_completion(frame, anchor, completion);
+    }
+
     // The fuzzy finder overlays everything when active.
     if let Focus::TableFinder(finder) = &app.browser.focus {
         render_finder(frame, finder);
     }
+}
+
+/// Render the autocompletion popup anchored under the query pane.
+fn render_completion(frame: &mut Frame, query_area: Rect, completion: &Completion) {
+    const MAX_ROWS: u16 = 8;
+    let screen = frame.area();
+
+    let visible = (completion.len() as u16).min(MAX_ROWS);
+    let height = visible + 2; // borders
+    let width = 40u16.min(query_area.width.max(10));
+
+    // Anchor just below the query pane, indented to the editor text. Clamp into
+    // the screen so a tall list near the bottom still renders.
+    let x = (query_area.x + 2).min(screen.right().saturating_sub(width));
+    let y_below = query_area.y + query_area.height;
+    let y = y_below.min(screen.bottom().saturating_sub(height));
+
+    let area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    if area.height < 3 || area.width < 4 {
+        return;
+    }
+
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" complete ");
+
+    let items: Vec<ListItem> = completion
+        .items()
+        .iter()
+        .map(|item| {
+            let (tag, tag_color) = match item.kind {
+                CandidateKind::Table => ("table", Color::Green),
+                CandidateKind::Column => ("col", Color::Yellow),
+                CandidateKind::Keyword => ("kw", Color::Magenta),
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(item.text.clone()),
+                Span::raw(" "),
+                Span::styled(format!("[{tag}]"), Style::default().fg(tag_color)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let mut state = ListState::default();
+    if !completion.is_empty() {
+        state.select(Some(completion.selected()));
+    }
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn focus_border(focused: bool) -> Style {
@@ -203,7 +278,7 @@ fn render_query(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
         EditorMode::Visual => "VISUAL",
         EditorMode::Search => "SEARCH",
     };
-    let title = format!(" 3 Query · {mode_label} · Ctrl+R run ");
+    let title = format!(" 3 Query · {mode_label} · Ctrl+Space complete · Ctrl+R run ");
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(focus_border(focused))
