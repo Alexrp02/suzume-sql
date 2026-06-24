@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::db::query::SelectQuery;
 use crate::model::delta::{KeyPart, CellDelta, RowKey, RowMutation};
 use crate::model::schema::{Catalog, ColumnMeta};
-use crate::model::value::Value;
+use crate::model::value::{TypeAffinity, Value};
 use crate::worker::{WorkerHandle, WorkerRequest, WorkerResponse};
 
 /// Default row cap for browse queries.
@@ -159,9 +159,26 @@ impl GridView {
     }
 
     pub fn set_rows(&mut self, rows: Vec<Vec<Value>>) {
-        self.rows = rows;
+        self.rows = rows.into_iter().map(|row| self.type_row(row)).collect();
         self.overlay.clear();
         self.clamp_selection();
+    }
+
+    /// Re-type a freshly-decoded row against the column affinities. Engines
+    /// decode JSON columns as text (Postgres casts every column to text;
+    /// MySQL/SQLite have no distinct JSON value), so the JSON shape is recovered
+    /// here from the schema.
+    fn type_row(&self, row: Vec<Value>) -> Vec<Value> {
+        row.into_iter()
+            .enumerate()
+            .map(|(col, value)| match self.columns.get(col) {
+                Some(meta) if meta.affinity == TypeAffinity::Json => match value {
+                    Value::Text(s) => Value::Json(s),
+                    other => other,
+                },
+                _ => value,
+            })
+            .collect()
     }
 
     pub fn row_count(&self) -> usize {
@@ -1099,6 +1116,25 @@ mod tests {
         grid.record_edit(0, 1, Value::Text("a@x".to_string()));
         assert!(!grid.is_dirty(0, 1));
         assert!(grid.build_mutations("users").is_empty());
+    }
+
+    #[test]
+    fn set_rows_retypes_json_columns_from_text() {
+        let mut columns = vec![col("id", true), col("payload", false)];
+        // Force the payload column to JSON affinity, as a real json column would.
+        columns[1].affinity = TypeAffinity::Json;
+        let mut grid = GridView::new(columns, true);
+        grid.set_rows(vec![vec![
+            Value::Integer(1),
+            Value::Text(r#"{"k":1}"#.to_string()),
+        ]]);
+
+        // The id column stays an integer; the json column is re-typed.
+        assert_eq!(grid.display_value(0, 0), Some(&Value::Integer(1)));
+        assert_eq!(
+            grid.display_value(0, 1),
+            Some(&Value::Json(r#"{"k":1}"#.to_string()))
+        );
     }
 
     #[test]

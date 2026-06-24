@@ -206,6 +206,7 @@ impl ToSql for Value {
             Value::Text(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
             Value::Boolean(b) => ToSqlOutput::Owned(SqliteValue::Integer(i64::from(*b))),
             Value::Blob(bytes) => ToSqlOutput::Borrowed(ValueRef::Blob(bytes)),
+            Value::Json(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
         };
         Ok(output)
     }

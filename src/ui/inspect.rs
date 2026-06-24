@@ -88,7 +88,7 @@ fn build_lines(target: &InspectTarget, width: usize) -> Vec<Line<'static>> {
 }
 
 /// Wrap a value's display text into styled spans, one per display line. `NULL`
-/// renders dim and italic, matching the grid.
+/// renders dim and italic, matching the grid; JSON is pretty-printed.
 fn wrap_value(value: &Value, width: usize) -> Vec<Span<'static>> {
     let style = if value.is_null() {
         Style::default()
@@ -97,10 +97,22 @@ fn wrap_value(value: &Value, width: usize) -> Vec<Span<'static>> {
     } else {
         Style::default()
     };
-    wrap_text(&value.to_string(), width)
+    wrap_text(&display_text(value), width)
         .into_iter()
         .map(|line| Span::styled(line, style))
         .collect()
+}
+
+/// The full, un-truncated text shown for a value. JSON is reflowed into an
+/// indented multi-line form; malformed source falls back to its raw text.
+fn display_text(value: &Value) -> String {
+    match value {
+        Value::Json(source) => serde_json::from_str::<serde_json::Value>(source)
+            .ok()
+            .and_then(|json| serde_json::to_string_pretty(&json).ok())
+            .unwrap_or_else(|| source.clone()),
+        other => other.to_string(),
+    }
 }
 
 /// Hard-wrap text to `width` characters, preserving existing newlines. Splits on
@@ -137,6 +149,18 @@ mod tests {
         assert_eq!(wrap_text("ab\ncd", 10), vec!["ab", "cd"]);
         // A trailing empty line (blank value row) is preserved as one line.
         assert_eq!(wrap_text("", 4), vec![""]);
+    }
+
+    #[test]
+    fn json_values_are_pretty_printed_over_multiple_lines() {
+        let value = Value::Json(r#"{"a":1,"b":[2,3]}"#.to_string());
+        let text = display_text(&value);
+        assert!(text.contains('\n'), "pretty JSON should span multiple lines");
+        assert!(text.contains("\"a\": 1"));
+
+        // Malformed JSON degrades to its raw single-line source.
+        let broken = Value::Json("{not json".to_string());
+        assert_eq!(display_text(&broken), "{not json");
     }
 
     #[test]

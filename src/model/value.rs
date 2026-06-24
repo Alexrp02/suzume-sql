@@ -16,7 +16,10 @@ pub enum TypeAffinity {
     Text,
     Blob,
     Boolean,
-    /// Anything we do not recognise (dates, json, numeric, ...). Treated as text.
+    /// A JSON/JSONB column. Engines decode it as text; the grid re-types it to
+    /// [`Value::Json`] so it can be pretty-printed.
+    Json,
+    /// Anything we do not recognise (dates, numeric, ...). Treated as text.
     Unknown,
 }
 
@@ -26,7 +29,9 @@ impl TypeAffinity {
     pub fn from_declared(declared: &str) -> TypeAffinity {
         let t = declared.to_ascii_lowercase();
         // Order matters: check the more specific names first.
-        if t.contains("bool") {
+        if t.contains("json") {
+            TypeAffinity::Json
+        } else if t.contains("bool") {
             TypeAffinity::Boolean
         } else if t.contains("int")
             || t == "serial"
@@ -60,6 +65,9 @@ pub enum Value {
     Text(String),
     Blob(Vec<u8>),
     Boolean(bool),
+    /// A JSON document, kept as its raw source text. Engines bind it as text;
+    /// the inspector pretty-prints it.
+    Json(String),
 }
 
 impl Value {
@@ -81,6 +89,9 @@ impl Value {
                 }
             }
             _ if raw.is_empty() => Value::Null,
+            // Keep the user's text as the JSON source; an invalid document is
+            // bound as-is so the engine's `::json` cast rejects it loudly.
+            TypeAffinity::Json => Value::Json(raw.to_string()),
             TypeAffinity::Integer => match raw.parse::<i64>() {
                 Ok(n) => Value::Integer(n),
                 // Keep the user's text if it is not a clean integer; the engine
@@ -114,6 +125,9 @@ impl Value {
             Value::Text(s) => Json::String(s.clone()),
             Value::Boolean(b) => Json::Bool(*b),
             Value::Blob(bytes) => Json::String(format!("<blob {} bytes>", bytes.len())),
+            // Embed the parsed document so a yanked row nests it as JSON rather
+            // than a quoted string; malformed source degrades to a string.
+            Value::Json(s) => serde_json::from_str(s).unwrap_or_else(|_| Json::String(s.clone())),
         }
     }
 
@@ -128,6 +142,7 @@ impl Value {
             Value::Text(s) => Some(s.clone()),
             Value::Boolean(b) => Some(if *b { "true" } else { "false" }.to_string()),
             Value::Blob(bytes) => Some(format!("\\x{}", hex_encode(bytes))),
+            Value::Json(s) => Some(s.clone()),
         }
     }
 }
@@ -141,6 +156,8 @@ impl fmt::Display for Value {
             Value::Text(s) => f.write_str(s),
             Value::Boolean(b) => f.write_str(if *b { "true" } else { "false" }),
             Value::Blob(bytes) => write!(f, "<blob {} bytes>", bytes.len()),
+            // Compact source for the grid; the inspector pretty-prints separately.
+            Value::Json(s) => f.write_str(s),
         }
     }
 }
@@ -169,7 +186,34 @@ mod tests {
         assert_eq!(TypeAffinity::from_declared("boolean"), TypeAffinity::Boolean);
         assert_eq!(TypeAffinity::from_declared("numeric"), TypeAffinity::Real);
         assert_eq!(TypeAffinity::from_declared("bytea"), TypeAffinity::Blob);
-        assert_eq!(TypeAffinity::from_declared("jsonb"), TypeAffinity::Unknown);
+        assert_eq!(TypeAffinity::from_declared("json"), TypeAffinity::Json);
+        assert_eq!(TypeAffinity::from_declared("jsonb"), TypeAffinity::Json);
+    }
+
+    #[test]
+    fn json_round_trips_through_text_and_nested_json() {
+        // Editing a JSON cell keeps the source text; an empty buffer is NULL.
+        assert_eq!(
+            Value::parse(r#"{"a":1}"#, TypeAffinity::Json),
+            Value::Json(r#"{"a":1}"#.to_string())
+        );
+        assert_eq!(Value::parse("", TypeAffinity::Json), Value::Null);
+
+        // The SQL bind form is the raw source...
+        assert_eq!(
+            Value::Json(r#"{"a":1}"#.to_string()).to_sql_text(),
+            Some(r#"{"a":1}"#.to_string())
+        );
+        // ...while `to_json` nests the parsed document (not a quoted string).
+        assert_eq!(
+            Value::Json(r#"{"a":1}"#.to_string()).to_json(),
+            serde_json::json!({"a": 1})
+        );
+        // Malformed JSON still serializes, degrading to a plain string.
+        assert_eq!(
+            Value::Json("{not json".to_string()).to_json(),
+            serde_json::json!("{not json")
+        );
     }
 
     #[test]

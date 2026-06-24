@@ -215,6 +215,7 @@ fn to_my_value(value: &Value) -> MyValue {
         Value::Text(s) => MyValue::Bytes(s.clone().into_bytes()),
         Value::Boolean(b) => MyValue::Int(i64::from(*b)),
         Value::Blob(bytes) => MyValue::Bytes(bytes.clone()),
+        Value::Json(s) => MyValue::Bytes(s.clone().into_bytes()),
     }
 }
 
