@@ -11,6 +11,11 @@
 //! name = "prod"
 //! engine = "postgres"
 //! url = "postgresql://user:pass@localhost:5432/app"
+//!
+//! [[connections]]
+//! name = "mysql-local"
+//! engine = "mysql"
+//! url = "mysql://user:pass@localhost:3306/app"
 
 use serde::Deserialize;
 
@@ -23,6 +28,7 @@ use crate::error::ConfigError;
 pub enum ConnectionConfig {
     Sqlite { path: String },
     Postgres { url: String },
+    Mysql { url: String },
 }
 
 impl ConnectionConfig {
@@ -30,6 +36,7 @@ impl ConnectionConfig {
         match self {
             ConnectionConfig::Sqlite { .. } => "sqlite",
             ConnectionConfig::Postgres { .. } => "postgres",
+            ConnectionConfig::Mysql { .. } => "mysql",
         }
     }
 
@@ -38,6 +45,7 @@ impl ConnectionConfig {
         match self {
             ConnectionConfig::Sqlite { path } => path,
             ConnectionConfig::Postgres { url } => url,
+            ConnectionConfig::Mysql { url } => url,
         }
     }
 }
@@ -104,13 +112,13 @@ mod tests {
         assert_eq!(config.connections.len(), 2);
         match &config.connections[0].connection {
             ConnectionConfig::Sqlite { path } => assert_eq!(path, "./demo.db"),
-            ConnectionConfig::Postgres { .. } => panic!("expected sqlite"),
+            other => panic!("expected sqlite, got {other:?}"),
         }
         match &config.connections[1].connection {
             ConnectionConfig::Postgres { url } => {
                 assert_eq!(url, "postgresql://u:p@localhost/app")
             }
-            ConnectionConfig::Sqlite { .. } => panic!("expected postgres"),
+            other => panic!("expected postgres, got {other:?}"),
         }
         assert_eq!(config.connection("prod").expect("found").name, "prod");
         assert!(config.connection("missing").is_err());

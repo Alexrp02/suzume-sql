@@ -1,5 +1,6 @@
 //! Database access layer: a uniform engine trait with per-backend impls.
 
+pub mod mysql;
 pub mod postgres;
 pub mod query;
 pub mod sqlite;
@@ -57,6 +58,10 @@ pub fn connect(config: &ConnectionConfig) -> Result<Box<dyn DatabaseEngine>, DbE
         }
         ConnectionConfig::Postgres { url } => {
             let engine = postgres::PostgresEngine::connect(url)?;
+            Ok(Box::new(engine))
+        }
+        ConnectionConfig::Mysql { url } => {
+            let engine = mysql::MysqlEngine::connect(url)?;
             Ok(Box::new(engine))
         }
     }

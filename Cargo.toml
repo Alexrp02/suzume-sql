@@ -10,6 +10,7 @@ crossterm = "0.29.0"
 # clipboard (arboard → X11/image) and syntect; we only need the keyboard editor.
 edtui = { version = "0.11.3", default-features = false }
 fuzzy-matcher = "0.3.7"
+mysql = { version = "28.0.0", default-features = false, features = ["minimal-rust", "derive", "buffer-pool"] }
 postgres = "0.19.14"
 ratatui = "0.30.1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }

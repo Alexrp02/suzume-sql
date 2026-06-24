@@ -13,14 +13,24 @@ use crate::model::value::Value;
 pub enum Dialect {
     Sqlite,
     Postgres,
+    Mysql,
 }
 
 impl Dialect {
-    /// Quote an identifier with double quotes, escaping embedded quotes. Both
-    /// SQLite and Postgres accept double-quoted identifiers.
+    /// Quote an identifier, escaping the embedded quote character by doubling it.
+    /// SQLite and Postgres use double quotes; MySQL uses backticks (its default
+    /// mode does not treat double quotes as identifier delimiters).
     pub fn quote_ident(&self, ident: &str) -> String {
-        let escaped = ident.replace('"', "\"\"");
-        format!("\"{escaped}\"")
+        match self {
+            Dialect::Mysql => {
+                let escaped = ident.replace('`', "``");
+                format!("`{escaped}`")
+            }
+            Dialect::Sqlite | Dialect::Postgres => {
+                let escaped = ident.replace('"', "\"\"");
+                format!("\"{escaped}\"")
+            }
+        }
     }
 }
 
@@ -49,7 +59,8 @@ impl SelectQuery {
                     // Cast every column to text so the Postgres read path is
                     // uniform and never trips over an exotic type's binary form.
                     Dialect::Postgres => format!("{}::text", dialect.quote_ident(c)),
-                    Dialect::Sqlite => dialect.quote_ident(c),
+                    // SQLite and MySQL decode native typed values directly.
+                    Dialect::Sqlite | Dialect::Mysql => dialect.quote_ident(c),
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -102,7 +113,9 @@ pub fn build_update(
         *idx += 1;
         params.push(value);
         match dialect {
-            Dialect::Sqlite => "?".to_string(),
+            // SQLite and MySQL use positional `?` placeholders; values are bound
+            // directly and the server coerces to the column type.
+            Dialect::Sqlite | Dialect::Mysql => "?".to_string(),
             Dialect::Postgres => {
                 let cast = table_meta
                     .column(column)
