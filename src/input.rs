@@ -84,6 +84,7 @@ fn handle_browser(app: &mut App, key: KeyEvent) {
         Focus::Data => handle_data(app, key),
         Focus::CellEdit(_) => handle_cell_edit(app, key),
         Focus::TableFinder(_) => handle_finder(app, key),
+        Focus::Inspect(_) => handle_inspect(app, key),
     }
 }
 
@@ -257,7 +258,9 @@ fn handle_data(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Char('G') => app.browser.grid.goto_bottom(),
-        KeyCode::Char('i') | KeyCode::Enter => begin_cell_edit(app),
+        KeyCode::Char('e') | KeyCode::Enter => begin_cell_edit(app),
+        KeyCode::Char('i') => app.inspect_cell(),
+        KeyCode::Char('I') => app.inspect_row(),
         KeyCode::Char('u') => app.discard_pending(),
         KeyCode::Char('y') => app.yank_cell(),
         KeyCode::Char('Y') => app.yank_row(),
@@ -399,6 +402,23 @@ fn handle_finder(app: &mut App, key: KeyEvent) {
         KeyCode::Home => with_finder_cursor(app, TextInput::home),
         KeyCode::End => with_finder_cursor(app, TextInput::end),
         KeyCode::Char(c) => with_finder_query(app, |input| input.insert(c)),
+        _ => {}
+    }
+}
+
+fn handle_inspect(app: &mut App, key: KeyEvent) {
+    if is_ctrl(&key, 'd') {
+        app.scroll_inspect_half(1);
+        return;
+    }
+    if is_ctrl(&key, 'u') {
+        app.scroll_inspect_half(-1);
+        return;
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_inspect(),
+        KeyCode::Char('j') | KeyCode::Down => app.scroll_inspect(1),
+        KeyCode::Char('k') | KeyCode::Up => app.scroll_inspect(-1),
         _ => {}
     }
 }

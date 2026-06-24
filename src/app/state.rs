@@ -7,6 +7,7 @@ use edtui::{EditorEventHandler, EditorState, Lines};
 use crate::app::completion::Completion;
 use crate::app::editor::{CellEditor, TextInput};
 use crate::app::finder::FinderState;
+use crate::app::inspect::InspectState;
 use crate::clipboard::ClipboardSink;
 use crate::config::Config;
 use crate::db::query::SelectQuery;
@@ -84,6 +85,8 @@ pub enum Focus {
     CellEdit(CellEditor),
     /// The fuzzy table finder overlay (summoned from Catalog/Data).
     TableFinder(FinderState),
+    /// The read-only cell/row inspector overlay (summoned from the data grid).
+    Inspect(InspectState),
 }
 
 impl Focus {
@@ -94,7 +97,7 @@ impl Focus {
             // The finder overlays the catalog.
             Focus::Catalog | Focus::TableFinder(_) => 2,
             Focus::Query => 3,
-            Focus::Data | Focus::CellEdit(_) => 4,
+            Focus::Data | Focus::CellEdit(_) | Focus::Inspect(_) => 4,
         }
     }
 }
@@ -394,6 +397,9 @@ pub struct BrowserState {
     pub grid_viewport_rows: usize,
     /// Visible row count of the catalog list from the last render.
     pub catalog_viewport_rows: usize,
+    /// Visible body-line count of the inspector overlay from the last render,
+    /// used to size half-page scrolling.
+    pub inspect_viewport_rows: usize,
 }
 
 impl BrowserState {
@@ -410,6 +416,7 @@ impl BrowserState {
             completion: None,
             grid_viewport_rows: 0,
             catalog_viewport_rows: 0,
+            inspect_viewport_rows: 0,
         }
     }
 }
@@ -904,6 +911,64 @@ impl App {
         }
     }
 
+    /// Open the inspector on the selected cell. Always available, even on
+    /// read-only relations: inspection never mutates the grid.
+    pub fn inspect_cell(&mut self) {
+        let grid = &self.browser.grid;
+        if grid.row_count() == 0 || grid.col_count() == 0 {
+            self.info("Nothing to inspect");
+            return;
+        }
+        let column = grid
+            .columns
+            .get(grid.sel_col)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        let value = grid
+            .display_value(grid.sel_row, grid.sel_col)
+            .cloned()
+            .unwrap_or(Value::Null);
+        self.browser.focus = Focus::Inspect(InspectState::cell(column, value));
+    }
+
+    /// Open the inspector on the selected row (every column/value pair).
+    pub fn inspect_row(&mut self) {
+        let grid = &self.browser.grid;
+        if grid.row_count() == 0 || grid.col_count() == 0 {
+            self.info("Nothing to inspect");
+            return;
+        }
+        let row = grid.sel_row;
+        let fields = grid
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(col, meta)| {
+                let value = grid.display_value(row, col).cloned().unwrap_or(Value::Null);
+                (meta.name.clone(), value)
+            })
+            .collect();
+        self.browser.focus = Focus::Inspect(InspectState::row(fields));
+    }
+
+    /// Close the inspector, returning focus to the data grid.
+    pub fn close_inspect(&mut self) {
+        self.browser.focus = Focus::Data;
+    }
+
+    /// Scroll the inspector by `delta` display lines.
+    pub fn scroll_inspect(&mut self, delta: isize) {
+        if let Focus::Inspect(inspect) = &mut self.browser.focus {
+            inspect.scroll_by(delta);
+        }
+    }
+
+    /// Scroll the inspector by half a visible page; `dir` is +1 down, -1 up.
+    pub fn scroll_inspect_half(&mut self, dir: isize) {
+        let half = (self.browser.inspect_viewport_rows / 2).max(1) as isize;
+        self.scroll_inspect(dir * half);
+    }
+
     /// Discard all pending edits.
     pub fn discard_pending(&mut self) {
         if self.browser.grid.has_pending() {
@@ -1066,6 +1131,7 @@ mod tests {
             completion: None,
             grid_viewport_rows: 0,
             catalog_viewport_rows: 0,
+            inspect_viewport_rows: 0,
         };
 
         let mut app = App {
@@ -1222,6 +1288,68 @@ mod tests {
         terminal
             .draw(|frame| crate::ui::render(frame, &mut app))
             .expect("render");
+    }
+
+    #[test]
+    fn inspect_row_snapshots_every_column_and_renders() {
+        use crate::app::inspect::InspectTarget;
+        use crate::config::Config;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut browser = BrowserState::new();
+        browser.sidebar.names = vec!["users".to_string()];
+        browser.loaded_table = Some("users".to_string());
+        let mut grid = GridView::new(vec![col("id", true), col("email", false)], false);
+        grid.set_rows(vec![vec![
+            Value::Integer(1),
+            // A value longer than the overlay width exercises wrapping/scrolling.
+            Value::Text("a".repeat(120)),
+        ]]);
+        browser.grid = grid;
+
+        let mut app = App {
+            config: Config {
+                connections: Vec::new(),
+            },
+            screen: Screen::Browser,
+            worker: None,
+            connection_name: "local".to_string(),
+            catalog: Catalog::default(),
+            browser,
+            status: StatusLine::default(),
+            pending: None,
+            spinner_frame: 0,
+            should_quit: false,
+            clipboard: ClipboardSink::disabled(),
+            last_yank: None,
+            select_seq: 0,
+            latest_select_id: 0,
+        };
+
+        app.inspect_row();
+        match &app.browser.focus {
+            Focus::Inspect(inspect) => match &inspect.target {
+                InspectTarget::Row { fields } => {
+                    assert_eq!(fields.len(), 2);
+                    assert_eq!(fields[0].0, "id");
+                    assert_eq!(fields[1].0, "email");
+                }
+                InspectTarget::Cell { .. } => panic!("expected a row inspector"),
+            },
+            _ => panic!("expected the inspector to be focused"),
+        }
+
+        // A short viewport forces the scroll clamp; rendering must not panic, and
+        // the scroll offset must settle within the wrapped content height.
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).expect("terminal");
+        app.scroll_inspect(1000);
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .expect("render");
+        if let Focus::Inspect(inspect) = &app.browser.focus {
+            assert!(inspect.scroll < 1000);
+        }
     }
 
     #[test]

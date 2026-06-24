@@ -1,6 +1,7 @@
 //! Rendering: the four-pane browser plus the picker/connecting/fatal screens.
 
 mod grid;
+mod inspect;
 
 use edtui::{EditorMode, EditorTheme, EditorView};
 use ratatui::Frame;
@@ -84,6 +85,11 @@ fn render_browser(frame: &mut Frame, app: &mut App) {
     // The fuzzy finder overlays everything when active.
     if let Focus::TableFinder(finder) = &app.browser.focus {
         render_finder(frame, finder);
+    }
+
+    // The cell/row inspector overlays everything when active.
+    if matches!(app.browser.focus, Focus::Inspect(_)) {
+        inspect::render(frame, app);
     }
 }
 
@@ -378,7 +384,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     spans.push(Span::styled(
-        "   [1-4 panes · / find · i edit · y/Y yank · Ctrl+R run · R refresh · q quit]",
+        "   [1-4 panes · / find · i/I inspect · e edit · y/Y yank · Ctrl+R run · R refresh · q quit]",
         Style::default().fg(Color::DarkGray),
     ));
 

@@ -3,4 +3,5 @@
 pub mod completion;
 pub mod editor;
 pub mod finder;
+pub mod inspect;
 pub mod state;
