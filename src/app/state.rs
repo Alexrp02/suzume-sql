@@ -104,6 +104,18 @@ pub struct SidebarState {
     pub selected: usize,
 }
 
+impl SidebarState {
+    /// Move the selection by `delta` entries, clamped to the list bounds.
+    pub fn move_selection(&mut self, delta: isize) {
+        if self.names.is_empty() {
+            return;
+        }
+        let last = self.names.len() - 1;
+        let next = self.selected as isize + delta;
+        self.selected = next.clamp(0, last as isize) as usize;
+    }
+}
+
 /// The virtualized data grid: original rows plus an overlay of pending edits.
 pub struct GridView {
     pub columns: Vec<ColumnMeta>,
@@ -375,6 +387,11 @@ pub struct BrowserState {
     /// The open autocompletion popup, if any. Shared by the query pane and the
     /// controls fields; only one text context is focused at a time.
     pub completion: Option<Completion>,
+    /// Visible body-row count of the data grid from the last render, used to size
+    /// half-page (`Ctrl+U`/`Ctrl+D`) scrolling.
+    pub grid_viewport_rows: usize,
+    /// Visible row count of the catalog list from the last render.
+    pub catalog_viewport_rows: usize,
 }
 
 impl BrowserState {
@@ -389,6 +406,8 @@ impl BrowserState {
             loaded_table: None,
             awaiting_g: false,
             completion: None,
+            grid_viewport_rows: 0,
+            catalog_viewport_rows: 0,
         }
     }
 }
@@ -700,6 +719,19 @@ impl App {
         };
     }
 
+    /// Scroll the data grid by half a visible page; `dir` is +1 for down, -1 up.
+    pub fn scroll_grid_half(&mut self, dir: isize) {
+        let half = (self.browser.grid_viewport_rows / 2).max(1) as isize;
+        self.browser.awaiting_g = false;
+        self.browser.grid.move_row(dir * half);
+    }
+
+    /// Scroll the catalog list by half a visible page; `dir` is +1 down, -1 up.
+    pub fn scroll_catalog_half(&mut self, dir: isize) {
+        let half = (self.browser.catalog_viewport_rows / 2).max(1) as isize;
+        self.browser.sidebar.move_selection(dir * half);
+    }
+
     /// Recompute the popup after a buffer edit, closing it if nothing matches.
     pub fn refresh_completion(&mut self) {
         if self.browser.completion.is_none() {
@@ -922,6 +954,22 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_move_selection_clamps_to_bounds() {
+        let mut sidebar = SidebarState {
+            names: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+        };
+        sidebar.move_selection(10); // half-page jump past the end
+        assert_eq!(sidebar.selected, 2);
+        sidebar.move_selection(-10);
+        assert_eq!(sidebar.selected, 0);
+
+        let mut empty = SidebarState::default();
+        empty.move_selection(5); // must not panic on an empty list
+        assert_eq!(empty.selected, 0);
+    }
+
+    #[test]
     fn edit_then_build_mutation_uses_primary_key() {
         let mut grid = grid_with_pk();
         grid.record_edit(0, 1, Value::Text("new@x".to_string()));
@@ -999,6 +1047,8 @@ mod tests {
             loaded_table: Some("users".to_string()),
             awaiting_g: false,
             completion: None,
+            grid_viewport_rows: 0,
+            catalog_viewport_rows: 0,
         };
 
         let mut app = App {

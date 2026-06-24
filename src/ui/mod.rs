@@ -55,6 +55,11 @@ fn render_browser(frame: &mut Frame, app: &mut App) {
     let [query_area, data_area] =
         Layout::vertical([Constraint::Length(query_height), Constraint::Min(0)]).areas(right_area);
 
+    // Record visible row counts for half-page scrolling: the grid loses 2 border
+    // rows and 1 header row; the catalog list loses its 2 border rows.
+    app.browser.grid_viewport_rows = (data_area.height as usize).saturating_sub(3);
+    app.browser.catalog_viewport_rows = (sidebar_area.height as usize).saturating_sub(2);
+
     let active = app.browser.focus.pane();
 
     // Immutable renders first; the query editor needs `&mut`, so it goes last.

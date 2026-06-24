@@ -195,6 +195,14 @@ fn handle_catalog(app: &mut App, key: KeyEvent) {
         app.focus_pane(pane);
         return;
     }
+    if is_ctrl(&key, 'd') {
+        app.scroll_catalog_half(1);
+        return;
+    }
+    if is_ctrl(&key, 'u') {
+        app.scroll_catalog_half(-1);
+        return;
+    }
     match key.code {
         KeyCode::Char('q') => app.quit(),
         KeyCode::Down | KeyCode::Char('j') => {
@@ -216,6 +224,14 @@ fn handle_catalog(app: &mut App, key: KeyEvent) {
 fn handle_data(app: &mut App, key: KeyEvent) {
     if let Some(pane) = pane_digit(&key) {
         app.focus_pane(pane);
+        return;
+    }
+    if is_ctrl(&key, 'd') {
+        app.scroll_grid_half(1);
+        return;
+    }
+    if is_ctrl(&key, 'u') {
+        app.scroll_grid_half(-1);
         return;
     }
 
