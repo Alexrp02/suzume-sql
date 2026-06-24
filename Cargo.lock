@@ -1341,6 +1341,7 @@ name = "normal-sql"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "bytes",
  "crossterm",
  "edtui",
  "fuzzy-matcher",

@@ -100,7 +100,7 @@ pub struct ParamStatement {
 /// SQLite uses positional `?` placeholders and relies on column affinity.
 /// Postgres uses `$n` placeholders and casts each bind back to the column's
 /// declared type (we bind text, the server casts), so type safety is preserved
-/// without OID juggling.
+/// without OID juggling. We specify the data comes in text and then the cast we want.
 pub fn build_update(
     dialect: Dialect,
     table_meta: &TableMeta,
@@ -121,7 +121,7 @@ pub fn build_update(
                     .column(column)
                     .map(|c| c.declared_type.as_str())
                     .unwrap_or("text");
-                format!("${}::{cast}", *idx)
+                format!("${}::text::{cast}", *idx)
             }
         }
     };
@@ -285,7 +285,7 @@ mod tests {
         let stmt = build_update(Dialect::Postgres, &users_meta(), &mutation);
         assert_eq!(
             stmt.sql,
-            r#"UPDATE "users" SET "email" = $1::text WHERE "name" = $2::character varying AND "email" IS NULL AND "age" = $3::integer"#
+            r#"UPDATE "users" SET "email" = $1::text::text WHERE "name" = $2::text::character varying AND "email" IS NULL AND "age" = $3::text::integer"#
         );
         assert_eq!(
             stmt.params,

@@ -4,10 +4,13 @@
 //! value arrives as `Option<String>` regardless of its native type — uniform
 //! and free of per-type OID handling.
 //!
-//! Write path: values are bound as text and cast back to the column's declared
-//! type (`$n::<type>`), preserving type safety without binary encoding.
+//! Write path: every value is bound as text via `ToSql for Value` and the SQL
+//! pins the parameter to text before casting it to the column's declared type
+//! (`$n::text::<type>`), so the server does the conversion for any type without
+//! binary encoding. See `build_update` for why the `::text` step is required.
 
-use postgres::types::ToSql;
+use bytes::BytesMut;
+use postgres::types::{IsNull, ToSql, Type, to_sql_checked};
 use postgres::{Client, NoTls, SimpleQueryMessage, Transaction};
 
 use crate::db::query::{Dialect, ParamStatement, SelectQuery, build_update};
@@ -202,10 +205,37 @@ impl PostgresEngine {
 }
 
 fn exec_update(tx: &mut Transaction<'_>, stmt: &ParamStatement) -> Result<u64, DbError> {
-    // Own the text params so we can hand out trait-object references.
-    let owned: Vec<Option<String>> = stmt.params.iter().map(Value::to_sql_text).collect();
     let params: Vec<&(dyn ToSql + Sync)> =
-        owned.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+        stmt.params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
     tx.execute(&stmt.sql, &params)
         .map_err(|e| DbError::Commit(e.to_string()))
+}
+
+// Lives in the DB layer (not in `model`) so `Value` stays free of any postgres
+// coupling; the orphan rule allows it because `Value` is crate-local.
+//
+// Every value is serialized in its text form. The `$n::text::<type>` cast in
+// the generated SQL forces the parameter's inferred type to text, so the server
+// receives text and casts it to the column type — which is why `accepts` only
+// needs to cover the text family.
+impl ToSql for Value {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        match self.to_sql_text() {
+            Some(text) => {
+                out.extend_from_slice(text.as_bytes());
+                Ok(IsNull::No)
+            }
+            None => Ok(IsNull::Yes),
+        }
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        <String as ToSql>::accepts(ty)
+    }
+
+    to_sql_checked!();
 }
