@@ -7,9 +7,10 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::editor::TextInput;
+use crate::app::finder::FinderState;
 use crate::app::state::{App, ControlsField, Focus, Screen};
 use crate::model::schema::RelationKind;
 
@@ -61,6 +62,11 @@ fn render_browser(frame: &mut Frame, app: &mut App) {
     grid::render(frame, data_area, app, active == 4);
     render_status(frame, status_area, app);
     render_query(frame, query_area, app, query_focused);
+
+    // The fuzzy finder overlays everything when active.
+    if let Focus::TableFinder(finder) = &app.browser.focus {
+        render_finder(frame, finder);
+    }
 }
 
 fn focus_border(focused: bool) -> Style {
@@ -218,6 +224,53 @@ fn render_query(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     frame.render_widget(view, inner);
 }
 
+fn render_finder(frame: &mut Frame, finder: &FinderState) {
+    let area = centered_rect(60, 60, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(
+        " Find table — {}/{} (Enter open · Esc cancel) ",
+        finder.match_count(),
+        finder.total_count()
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let [input_area, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+
+    let mut prompt = vec![Span::styled("› ", Style::default().fg(Color::Cyan))];
+    prompt.extend(input_spans(&finder.input));
+    frame.render_widget(Paragraph::new(Line::from(prompt)), input_area);
+
+    let items: Vec<ListItem> = finder
+        .matched_names()
+        .into_iter()
+        .map(|name| ListItem::new(name.to_string()))
+        .collect();
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
+
+    let mut state = ListState::default();
+    if finder.match_count() > 0 {
+        state.select(Some(finder.selected_position()));
+    }
+    frame.render_stateful_widget(list, list_area, &mut state);
+}
+
 fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     let mut spans: Vec<Span> = Vec::new();
 
@@ -245,7 +298,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     spans.push(Span::styled(
-        "   [1-4 panes · i edit · Ctrl+R run · q quit]",
+        "   [1-4 panes · / find · i edit · Ctrl+R run · q quit]",
         Style::default().fg(Color::DarkGray),
     ));
 

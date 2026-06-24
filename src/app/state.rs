@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use edtui::{EditorEventHandler, EditorState, Lines};
 
 use crate::app::editor::{CellEditor, TextInput};
+use crate::app::finder::FinderState;
 use crate::config::Config;
 use crate::db::query::SelectQuery;
 use crate::model::delta::{KeyPart, CellDelta, RowKey, RowMutation};
@@ -77,6 +78,8 @@ pub enum Focus {
     Data,
     /// Editing a single grid cell (a sub-state of the data grid).
     CellEdit(CellEditor),
+    /// The fuzzy table finder overlay (summoned from Catalog/Data).
+    TableFinder(FinderState),
 }
 
 impl Focus {
@@ -84,7 +87,8 @@ impl Focus {
     pub fn pane(&self) -> u8 {
         match self {
             Focus::Controls { .. } => 1,
-            Focus::Catalog => 2,
+            // The finder overlays the catalog.
+            Focus::Catalog | Focus::TableFinder(_) => 2,
             Focus::Query => 3,
             Focus::Data | Focus::CellEdit(_) => 4,
         }
@@ -589,6 +593,38 @@ impl App {
         self.info("Running query...");
     }
 
+    /// Open the fuzzy table finder over the current catalog.
+    pub fn open_finder(&mut self) {
+        if self.browser.sidebar.names.is_empty() {
+            self.info("No tables to search");
+            return;
+        }
+        let names = self.browser.sidebar.names.clone();
+        self.browser.focus = Focus::TableFinder(FinderState::new(names));
+    }
+
+    /// Accept the finder's selection: load that table and close the finder.
+    pub fn finder_accept(&mut self) {
+        let index = match &self.browser.focus {
+            Focus::TableFinder(finder) => finder.selected_index(),
+            _ => return,
+        };
+        match index {
+            // `names` in the finder mirrors the sidebar ordering, so the index
+            // is directly usable as the sidebar selection.
+            Some(index) => {
+                self.browser.sidebar.selected = index;
+                self.open_sidebar_selection();
+            }
+            None => self.browser.focus = Focus::Catalog,
+        }
+    }
+
+    /// Close the finder without changing the selection.
+    pub fn finder_cancel(&mut self) {
+        self.browser.focus = Focus::Catalog;
+    }
+
     /// Focus a pane by its number (1=Controls, 2=Catalog, 3=Query, 4=Data).
     pub fn focus_pane(&mut self, pane: u8) {
         self.browser.awaiting_g = false;
@@ -831,6 +867,47 @@ mod tests {
         };
 
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .expect("render");
+    }
+
+    #[test]
+    fn renders_open_finder_overlay() {
+        use crate::app::finder::FinderState;
+        use crate::config::Config;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let names: Vec<String> = ["users", "products", "user_roles"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut browser = BrowserState::new();
+        browser.sidebar.names = names.clone();
+        let mut finder = FinderState::new(names);
+        finder.input = TextInput::with_text("usr");
+        finder.recompute();
+        browser.focus = Focus::TableFinder(finder);
+
+        let mut app = App {
+            config: Config {
+                connections: Vec::new(),
+            },
+            screen: Screen::Browser,
+            worker: None,
+            connection_name: "local".to_string(),
+            catalog: Catalog::default(),
+            browser,
+            status: StatusLine::default(),
+            pending: None,
+            spinner_frame: 0,
+            should_quit: false,
+            select_seq: 0,
+            latest_select_id: 0,
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(50, 16)).expect("terminal");
         terminal
             .draw(|frame| crate::ui::render(frame, &mut app))
             .expect("render");

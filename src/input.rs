@@ -83,6 +83,7 @@ fn handle_browser(app: &mut App, key: KeyEvent) {
         Focus::Query => handle_query(app, key),
         Focus::Data => handle_data(app, key),
         Focus::CellEdit(_) => handle_cell_edit(app, key),
+        Focus::TableFinder(_) => handle_finder(app, key),
     }
 }
 
@@ -151,7 +152,7 @@ fn handle_catalog(app: &mut App, key: KeyEvent) {
             app.browser.sidebar.selected = app.browser.sidebar.selected.saturating_sub(1);
         }
         KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => app.open_sidebar_selection(),
-        KeyCode::Char('/') => app.focus_pane(1),
+        KeyCode::Char('/') => app.open_finder(),
         _ => {}
     }
 }
@@ -185,7 +186,7 @@ fn handle_data(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') => app.browser.grid.goto_bottom(),
         KeyCode::Char('i') | KeyCode::Enter => begin_cell_edit(app),
         KeyCode::Char('u') => app.discard_pending(),
-        KeyCode::Char('/') => app.focus_pane(1),
+        KeyCode::Char('/') => app.open_finder(),
         _ => {}
     }
 }
@@ -232,6 +233,42 @@ fn handle_cell_edit(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_finder(app: &mut App, key: KeyEvent) {
+    if is_ctrl(&key, 'w') {
+        with_finder_query(app, TextInput::delete_word);
+        return;
+    }
+    if is_ctrl(&key, 'u') {
+        with_finder_query(app, TextInput::delete_to_start);
+        return;
+    }
+    // fzf-style navigation.
+    if is_ctrl(&key, 'n') {
+        move_finder(app, 1);
+        return;
+    }
+    if is_ctrl(&key, 'p') {
+        move_finder(app, -1);
+        return;
+    }
+
+    match key.code {
+        KeyCode::Esc => app.finder_cancel(),
+        KeyCode::Enter => app.finder_accept(),
+        KeyCode::Down => move_finder(app, 1),
+        KeyCode::Up => move_finder(app, -1),
+        KeyCode::Backspace => with_finder_query(app, TextInput::backspace),
+        KeyCode::Delete => with_finder_query(app, TextInput::delete),
+        // Cursor motion does not change the query, so it must not re-rank.
+        KeyCode::Left => with_finder_cursor(app, TextInput::left),
+        KeyCode::Right => with_finder_cursor(app, TextInput::right),
+        KeyCode::Home => with_finder_cursor(app, TextInput::home),
+        KeyCode::End => with_finder_cursor(app, TextInput::end),
+        KeyCode::Char(c) => with_finder_query(app, |input| input.insert(c)),
+        _ => {}
+    }
+}
+
 // --- helpers ---------------------------------------------------------------
 
 fn is_ctrl(key: &KeyEvent, c: char) -> bool {
@@ -266,6 +303,27 @@ fn with_controls_input(app: &mut App, op: impl FnOnce(&mut TextInput)) {
 fn with_cell_input(app: &mut App, op: impl FnOnce(&mut TextInput)) {
     if let Focus::CellEdit(editor) = &mut app.browser.focus {
         op(&mut editor.input);
+    }
+}
+
+/// Apply an edit to the finder query and re-rank the matches.
+fn with_finder_query(app: &mut App, op: impl FnOnce(&mut TextInput)) {
+    if let Focus::TableFinder(finder) = &mut app.browser.focus {
+        op(&mut finder.input);
+        finder.recompute();
+    }
+}
+
+/// Move the finder query cursor without re-ranking (the query is unchanged).
+fn with_finder_cursor(app: &mut App, op: impl FnOnce(&mut TextInput)) {
+    if let Focus::TableFinder(finder) = &mut app.browser.focus {
+        op(&mut finder.input);
+    }
+}
+
+fn move_finder(app: &mut App, delta: isize) {
+    if let Focus::TableFinder(finder) = &mut app.browser.focus {
+        finder.move_selection(delta);
     }
 }
 
