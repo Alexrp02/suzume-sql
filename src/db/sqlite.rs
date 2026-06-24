@@ -1,7 +1,7 @@
 //! SQLite backend, built on bundled `rusqlite`.
 
-use rusqlite::types::{Value as SqliteValue, ValueRef};
-use rusqlite::{Connection, params_from_iter};
+use rusqlite::types::{ToSqlOutput, Value as SqliteValue, ValueRef};
+use rusqlite::{Connection, ToSql, params_from_iter};
 
 use crate::db::query::{Dialect, SelectQuery, build_update};
 use crate::db::{DatabaseEngine, RAW_ROW_CAP, RawResult};
@@ -77,7 +77,7 @@ impl DatabaseEngine for SqliteEngine {
                 let value_ref = row
                     .get_ref(i)
                     .map_err(|e| DbError::Query(e.to_string()))?;
-                values.push(value_ref_to_value(value_ref));
+                values.push(Value::from(value_ref));
             }
             out.push(values);
         }
@@ -111,7 +111,7 @@ impl DatabaseEngine for SqliteEngine {
                 let value_ref = row
                     .get_ref(i)
                     .map_err(|e| DbError::Query(e.to_string()))?;
-                values.push(value_ref_to_value(value_ref));
+                values.push(Value::from(value_ref));
             }
             out.push(values);
         }
@@ -132,9 +132,8 @@ impl DatabaseEngine for SqliteEngine {
                 DbError::Commit(format!("unknown table `{}`", mutation.table))
             })?;
             let stmt = build_update(Dialect::Sqlite, table_meta, mutation);
-            let params = stmt.params.iter().cloned().map(to_sqlite_value);
             let affected = tx
-                .execute(&stmt.sql, params_from_iter(params))
+                .execute(&stmt.sql, params_from_iter(&stmt.params))
                 .map_err(|e| DbError::Commit(e.to_string()))?;
             if stmt.requires_single_row_check && affected != 1 {
                 // Dropping `tx` without commit rolls the whole batch back.
@@ -177,24 +176,38 @@ impl SqliteEngine {
     }
 }
 
-fn value_ref_to_value(value_ref: ValueRef<'_>) -> Value {
-    match value_ref {
-        ValueRef::Null => Value::Null,
-        ValueRef::Integer(n) => Value::Integer(n),
-        ValueRef::Real(f) => Value::Real(f),
-        ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).into_owned()),
-        ValueRef::Blob(bytes) => Value::Blob(bytes.to_vec()),
+// These conversions live in the DB layer (not in `model`) so `Value` stays
+// free of any rusqlite coupling. The orphan rule allows them here because
+// `Value` is a crate-local type — coherence is per-crate, not per-module.
+
+/// Read path: a borrowed SQLite value becomes an owned [`Value`].
+impl From<ValueRef<'_>> for Value {
+    fn from(value_ref: ValueRef<'_>) -> Value {
+        match value_ref {
+            ValueRef::Null => Value::Null,
+            ValueRef::Integer(n) => Value::Integer(n),
+            ValueRef::Real(f) => Value::Real(f),
+            ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).into_owned()),
+            ValueRef::Blob(bytes) => Value::Blob(bytes.to_vec()),
+        }
     }
 }
 
-fn to_sqlite_value(value: Value) -> SqliteValue {
-    match value {
-        Value::Null => SqliteValue::Null,
-        Value::Integer(n) => SqliteValue::Integer(n),
-        Value::Real(f) => SqliteValue::Real(f),
-        Value::Text(s) => SqliteValue::Text(s),
-        Value::Boolean(b) => SqliteValue::Integer(i64::from(b)),
-        Value::Blob(bytes) => SqliteValue::Blob(bytes),
+/// Write path: bind a [`Value`] directly as a SQL parameter. Implementing
+/// rusqlite's own `ToSql` (rather than a `Value → rusqlite::Value` conversion,
+/// which the orphan rule forbids) lets us pass `Value`s straight to
+/// `params_from_iter` and borrows where possible instead of cloning.
+impl ToSql for Value {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        let output = match self {
+            Value::Null => ToSqlOutput::Borrowed(ValueRef::Null),
+            Value::Integer(n) => ToSqlOutput::Borrowed(ValueRef::Integer(*n)),
+            Value::Real(f) => ToSqlOutput::Borrowed(ValueRef::Real(*f)),
+            Value::Text(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
+            Value::Boolean(b) => ToSqlOutput::Owned(SqliteValue::Integer(i64::from(*b))),
+            Value::Blob(bytes) => ToSqlOutput::Borrowed(ValueRef::Blob(bytes)),
+        };
+        Ok(output)
     }
 }
 
