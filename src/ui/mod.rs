@@ -1,7 +1,9 @@
 //! Rendering: the four-pane browser plus the picker/connecting/fatal screens.
 
+mod conn_form;
 mod grid;
 mod inspect;
+mod picker;
 
 use edtui::{EditorMode, EditorTheme, EditorView};
 use ratatui::Frame;
@@ -24,9 +26,8 @@ const QUERY_HEIGHT_FOCUSED: u16 = 9;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     match &app.screen {
-        Screen::Picker { selected } => {
-            render_picker(frame, app, *selected);
-        }
+        Screen::Picker(picker) => picker::render(frame, app, picker),
+        Screen::ConnectionForm(draft) => conn_form::render(frame, draft),
         Screen::Connecting => render_connecting(frame, app),
         Screen::Fatal(message) => {
             let message = message.clone();
@@ -389,50 +390,6 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     ));
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn render_picker(frame: &mut Frame, app: &App, selected: usize) {
-    let area = centered_rect(60, 60, frame.area());
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(" Select a connection ");
-
-    let items: Vec<ListItem> = app
-        .config
-        .connections
-        .iter()
-        .map(|c| {
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    c.name.clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  [{}] ", c.connection.engine_label()),
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    c.connection.target().to_string(),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("› ");
-
-    let mut state = ListState::default();
-    state.select(Some(selected));
-    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_connecting(frame: &mut Frame, app: &App) {

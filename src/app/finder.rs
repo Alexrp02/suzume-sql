@@ -68,6 +68,12 @@ impl FinderState {
         self.matches.get(self.selected).copied()
     }
 
+    /// The source indices of the current matches, in ranked order. Lets callers
+    /// render richer rows than the bare names (e.g. the connection picker).
+    pub fn matched_indices(&self) -> &[usize] {
+        &self.matches
+    }
+
     pub fn selected_position(&self) -> usize {
         self.selected
     }

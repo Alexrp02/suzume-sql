@@ -17,13 +17,17 @@
 //! engine = "mysql"
 //! url = "mysql://user:pass@localhost:3306/app"
 
-use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigError;
 
+const CONFIG_FILE: &str = "connections.toml";
+
 /// The backend-specific connection parameters. The `engine` tag selects the
 /// variant, so an invalid combination cannot be represented.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "engine", rename_all = "lowercase")]
 pub enum ConnectionConfig {
     Sqlite { path: String },
@@ -72,7 +76,7 @@ impl ConnectionConfig {
 }
 
 /// A named connection entry.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NamedConnection {
     pub name: String,
     #[serde(flatten)]
@@ -80,27 +84,67 @@ pub struct NamedConnection {
 }
 
 /// The whole config file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub connections: Vec<NamedConnection>,
 }
 
 impl Config {
-    /// Read and parse the config file at `path`.
-    pub fn load(path: &str) -> Result<Config, ConfigError> {
-        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+    pub fn default_os_config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|dir| dir.join("normal-sql").join(CONFIG_FILE))
+    }
+
+    pub fn load_or_create(path: &str) -> Result<Config, ConfigError> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Config::default());
+            }
+            Err(source) => {
+                return Err(ConfigError::Read {
+                    path: path.to_string(),
+                    source,
+                });
+            }
+        };
+        toml::from_str(&text).map_err(|source| ConfigError::Parse {
             path: path.to_string(),
             source,
-        })?;
-        let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
-            path: path.to_string(),
-            source,
-        })?;
-        if config.connections.is_empty() {
-            return Err(ConfigError::Empty);
+        })
+    }
+
+    pub fn save(&self, path: &str) -> Result<(), ConfigError> {
+        let text = toml::to_string_pretty(self).map_err(ConfigError::Serialize)?;
+        if let Some(parent) = Path::new(path).parent() {
+            std::fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+                path: path.to_string(),
+                source,
+            })?;
         }
-        Ok(config)
+        std::fs::write(path, text).map_err(|source| ConfigError::Write {
+            path: path.to_string(),
+            source,
+        })
+    }
+
+    pub fn upsert(&mut self, index: Option<usize>, connection: NamedConnection) -> usize {
+        match index {
+            Some(i) if i < self.connections.len() => {
+                self.connections[i] = connection;
+                i
+            }
+            _ => {
+                self.connections.push(connection);
+                self.connections.len() - 1
+            }
+        }
+    }
+
+    pub fn remove(&mut self, index: usize) {
+        if index < self.connections.len() {
+            self.connections.remove(index);
+        }
     }
 
     /// Reduce the config to just the connection named `name`, if present, so it
@@ -206,6 +250,46 @@ mod tests {
         assert_eq!(selected.connections.len(), 1);
         assert_eq!(selected.connections[0].name, "b");
         assert!(config.select("missing").is_none());
+    }
+
+    #[test]
+    fn save_then_load_round_trips_all_engines() {
+        let config = Config {
+            connections: vec![
+                NamedConnection {
+                    name: "local".to_string(),
+                    connection: ConnectionConfig::Sqlite {
+                        path: "./demo.db".to_string(),
+                    },
+                },
+                NamedConnection {
+                    name: "prod".to_string(),
+                    connection: ConnectionConfig::Postgres {
+                        url: "postgresql://u:p@localhost/app".to_string(),
+                    },
+                },
+            ],
+        };
+        let text = toml::to_string_pretty(&config).expect("serialize");
+        let reparsed: Config = toml::from_str(&text).expect("reparse");
+        assert_eq!(reparsed.connections.len(), 2);
+        assert_eq!(reparsed.connections[0].name, "local");
+        match &reparsed.connections[0].connection {
+            ConnectionConfig::Sqlite { path } => assert_eq!(path, "./demo.db"),
+            other => panic!("expected sqlite, got {other:?}"),
+        }
+        match &reparsed.connections[1].connection {
+            ConnectionConfig::Postgres { url } => {
+                assert_eq!(url, "postgresql://u:p@localhost/app")
+            }
+            other => panic!("expected postgres, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_missing_file_yields_empty_config() {
+        let config = Config::load_or_create("/no/such/normal-sql/connections.toml").expect("missing is ok");
+        assert!(config.connections.is_empty());
     }
 
     #[test]

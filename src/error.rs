@@ -20,8 +20,14 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
-    #[error("config defines no connections")]
-    Empty,
+    #[error("could not write config file `{path}`: {source}")]
+    Write {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not serialize config: {0}")]
+    Serialize(#[source] toml::ser::Error),
     #[error("no connection named `{0}` is defined in the config")]
     UnknownConnection(String),
     #[error(

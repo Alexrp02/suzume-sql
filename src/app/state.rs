@@ -5,16 +5,18 @@ use std::collections::{HashMap, HashSet};
 use edtui::{EditorEventHandler, EditorState, Lines};
 
 use crate::app::completion::Completion;
+use crate::app::conn_form::{ConnectionDraft, TestStatus};
 use crate::app::editor::{CellEditor, TextInput};
 use crate::app::finder::FinderState;
 use crate::app::inspect::InspectState;
+use crate::app::picker::{PickerPrompt, PickerState};
 use crate::clipboard::ClipboardSink;
 use crate::config::Config;
 use crate::db::query::SelectQuery;
 use crate::model::delta::{KeyPart, CellDelta, RowKey, RowMutation};
 use crate::model::schema::{Catalog, ColumnMeta};
 use crate::model::value::{TypeAffinity, Value};
-use crate::worker::{WorkerHandle, WorkerRequest, WorkerResponse};
+use crate::worker::{TestHandle, TestOutcome, WorkerHandle, WorkerRequest, WorkerResponse};
 
 /// Default row cap for browse queries.
 pub const ROW_LIMIT: u32 = 100;
@@ -48,8 +50,10 @@ pub struct StatusLine {
 
 /// Top-level screen. Each variant is a distinct, mutually exclusive state.
 pub enum Screen {
-    /// Choosing among multiple configured connections.
-    Picker { selected: usize },
+    /// Choosing among the configured connections (fuzzy-filterable).
+    Picker(PickerState),
+    /// Creating or editing a connection.
+    ConnectionForm(ConnectionDraft),
     /// Worker spawned; awaiting connection and first schema harvest.
     Connecting,
     /// The main three-pane browser.
@@ -476,6 +480,8 @@ impl BrowserState {
 /// The whole application.
 pub struct App {
     pub config: Config,
+    /// Where the connections config is read from and written back to.
+    pub config_path: String,
     pub screen: Screen,
     pub worker: Option<WorkerHandle>,
     pub connection_name: String,
@@ -496,10 +502,12 @@ pub struct App {
 impl App {
     /// Build the app for `config`. A single-connection config connects
     /// immediately; multiple connections open the picker.
-    pub fn new(config: Config) -> App {
+    pub fn new(config: Config, config_path: String) -> App {
+        let picker = PickerState::new(&config);
         let mut app = App {
             config,
-            screen: Screen::Picker { selected: 0 },
+            config_path,
+            screen: Screen::Picker(picker),
             worker: None,
             connection_name: String::new(),
             catalog: Catalog::default(),
@@ -532,6 +540,153 @@ impl App {
         self.status = StatusLine {
             message: format!("Connecting to `{}`...", named.name),
             is_error: false,
+        };
+    }
+
+    /// Open the connection picker, preserving the current session (if any) so the
+    /// user can cancel back to it.
+    pub fn open_picker(&mut self) {
+        self.screen = Screen::Picker(PickerState::new(&self.config));
+    }
+
+    /// Connect to the picker's highlighted connection. When a session is live
+    /// and the grid has uncommitted edits, the first call arms a confirmation
+    /// (so the switch doesn't silently discard them); the second performs it.
+    pub fn picker_connect(&mut self) {
+        let (index, already_confirmed) = match &self.screen {
+            Screen::Picker(picker) => match picker.selected_connection() {
+                Some(index) => (
+                    index,
+                    picker.prompt == Some(PickerPrompt::ConfirmSwitch(index)),
+                ),
+                None => return,
+            },
+            _ => return,
+        };
+        let needs_confirm = self.worker.is_some() && self.browser.grid.has_pending();
+        if needs_confirm && !already_confirmed {
+            if let Screen::Picker(picker) = &mut self.screen {
+                picker.prompt = Some(PickerPrompt::ConfirmSwitch(index));
+            }
+            return;
+        }
+        self.start_connection(index);
+    }
+
+    /// Open the create form for a new connection.
+    pub fn picker_new(&mut self) {
+        self.screen = Screen::ConnectionForm(ConnectionDraft::new());
+    }
+
+    /// Open the edit form pre-filled from the highlighted connection.
+    pub fn picker_edit(&mut self) {
+        let index = match &self.screen {
+            Screen::Picker(picker) => picker.selected_connection(),
+            _ => None,
+        };
+        let Some(index) = index else {
+            return;
+        };
+        let Some(conn) = self.config.connections.get(index) else {
+            return;
+        };
+        let draft = ConnectionDraft::from_existing(index, conn);
+        self.screen = Screen::ConnectionForm(draft);
+    }
+
+    /// Delete the highlighted connection. The first call arms a confirmation;
+    /// the second performs the delete and persists the config.
+    pub fn picker_delete(&mut self) {
+        let index = match &self.screen {
+            Screen::Picker(picker) => picker.selected_connection(),
+            _ => None,
+        };
+        let Some(index) = index else {
+            return;
+        };
+        let armed = matches!(
+            &self.screen,
+            Screen::Picker(picker) if picker.prompt == Some(PickerPrompt::ConfirmDelete(index))
+        );
+        if !armed {
+            if let Screen::Picker(picker) = &mut self.screen {
+                picker.prompt = Some(PickerPrompt::ConfirmDelete(index));
+            }
+            return;
+        }
+        self.config.remove(index);
+        if let Err(e) = self.config.save(&self.config_path) {
+            self.error(format!("Could not save config: {e}"));
+        }
+        self.screen = Screen::Picker(PickerState::new(&self.config));
+    }
+
+    /// Validate and persist the form's draft, returning to the picker on success.
+    /// Validation or write failures are surfaced on the form and keep it open.
+    pub fn form_save(&mut self) {
+        let result = match &self.screen {
+            Screen::ConnectionForm(draft) => draft.validate().map(|conn| (draft.editing, conn)),
+            _ => return,
+        };
+        let (editing, connection) = match result {
+            Ok(pair) => pair,
+            Err(err) => {
+                self.set_form_test(TestStatus::Failed(err.message().to_string()));
+                return;
+            }
+        };
+        self.config.upsert(editing, connection);
+        if let Err(e) = self.config.save(&self.config_path) {
+            self.set_form_test(TestStatus::Failed(format!("Save failed: {e}")));
+            return;
+        }
+        self.screen = Screen::Picker(PickerState::new(&self.config));
+    }
+
+    /// Start an ephemeral connection test for the form's draft. The attempt runs
+    /// on a throwaway thread so the UI never blocks; [`Self::poll_test`] applies
+    /// the outcome.
+    pub fn form_test(&mut self) {
+        let config = match &self.screen {
+            Screen::ConnectionForm(draft) => match draft.validate() {
+                Ok(conn) => conn.connection,
+                Err(err) => {
+                    self.set_form_test(TestStatus::Failed(err.message().to_string()));
+                    return;
+                }
+            },
+            _ => return,
+        };
+        self.set_form_test(TestStatus::Testing(TestHandle::spawn(config)));
+    }
+
+    /// Close the form without saving, returning to the picker.
+    pub fn form_cancel(&mut self) {
+        self.screen = Screen::Picker(PickerState::new(&self.config));
+    }
+
+    fn set_form_test(&mut self, status: TestStatus) {
+        if let Screen::ConnectionForm(draft) = &mut self.screen {
+            draft.test = status;
+        }
+    }
+
+    /// Poll the in-flight connection test, applying its outcome to the form once
+    /// it resolves. The handle lives in [`TestStatus::Testing`], so this is a
+    /// no-op unless a test is actually running.
+    pub fn poll_test(&mut self) {
+        let Screen::ConnectionForm(draft) = &mut self.screen else {
+            return;
+        };
+        let TestStatus::Testing(handle) = &draft.test else {
+            return;
+        };
+        let Some(outcome) = handle.try_recv() else {
+            return;
+        };
+        draft.test = match outcome {
+            TestOutcome::Ok => TestStatus::Ok,
+            TestOutcome::Failed(msg) => TestStatus::Failed(msg),
         };
     }
 
@@ -1267,6 +1422,7 @@ mod tests {
             config: Config {
                 connections: Vec::new(),
             },
+            config_path: "test.toml".to_string(),
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
@@ -1306,6 +1462,7 @@ mod tests {
             config: Config {
                 connections: Vec::new(),
             },
+            config_path: "test.toml".to_string(),
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
@@ -1355,6 +1512,7 @@ mod tests {
             config: Config {
                 connections: Vec::new(),
             },
+            config_path: "test.toml".to_string(),
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
@@ -1398,6 +1556,7 @@ mod tests {
             config: Config {
                 connections: Vec::new(),
             },
+            config_path: "test.toml".to_string(),
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
@@ -1441,6 +1600,7 @@ mod tests {
             config: Config {
                 connections: Vec::new(),
             },
+            config_path: "test.toml".to_string(),
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
@@ -1508,5 +1668,82 @@ mod tests {
                 },
             ])
         );
+    }
+
+    fn bare_app(config: Config, screen: Screen) -> App {
+        App {
+            config,
+            config_path: "test.toml".to_string(),
+            screen,
+            worker: None,
+            connection_name: String::new(),
+            catalog: Catalog::default(),
+            browser: BrowserState::new(),
+            status: StatusLine::default(),
+            pending: None,
+            spinner_frame: 0,
+            should_quit: false,
+            clipboard: ClipboardSink::disabled(),
+            last_yank: None,
+            select_seq: 0,
+            latest_select_id: 0,
+        }
+    }
+
+    #[test]
+    fn renders_connection_picker_with_fuzzy_query() {
+        use crate::app::picker::PickerState;
+        use crate::config::{ConnectionConfig, NamedConnection};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let config = Config {
+            connections: vec![
+                NamedConnection {
+                    name: "local".to_string(),
+                    connection: ConnectionConfig::Sqlite {
+                        path: "./a.db".to_string(),
+                    },
+                },
+                NamedConnection {
+                    name: "prod".to_string(),
+                    connection: ConnectionConfig::Postgres {
+                        url: "postgresql://u:p@h/db".to_string(),
+                    },
+                },
+            ],
+        };
+        let mut picker = PickerState::new(&config);
+        picker.finder.input = TextInput::with_text("pr");
+        picker.finder.recompute();
+        assert_eq!(picker.selected_connection(), Some(1));
+
+        let mut app = bare_app(config, Screen::Picker(picker));
+        let mut terminal = Terminal::new(TestBackend::new(50, 16)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .expect("render");
+    }
+
+    #[test]
+    fn renders_connection_form_with_failed_test() {
+        use crate::app::conn_form::{ConnectionDraft, DraftEngine, FormFocus};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut draft = ConnectionDraft::new();
+        draft.engine = DraftEngine::Postgres;
+        // Exercise the insert-mode (editing) render path on a text field.
+        draft.focus = FormFocus::Value { editing: true };
+        draft.name = TextInput::with_text("prod");
+        draft.value = TextInput::with_text("postgresql://u:p@h/db");
+        draft.test = TestStatus::Failed("connection refused".to_string());
+
+        let mut app = bare_app(Config::default(), Screen::ConnectionForm(draft));
+        // A cramped viewport stresses the wrapped test-status line.
+        let mut terminal = Terminal::new(TestBackend::new(34, 12)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .expect("render");
     }
 }

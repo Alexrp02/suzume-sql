@@ -86,6 +86,42 @@ impl WorkerHandle {
     }
 }
 
+/// The outcome of a one-shot connection test.
+#[derive(Debug)]
+pub enum TestOutcome {
+    Ok,
+    Failed(String),
+}
+
+/// A throwaway connection attempt used by the connection form's "test" action.
+///
+/// It connects on its own thread and reports the outcome over a channel, then
+/// drops the connection immediately — the UI never blocks on the attempt, and a
+/// successful test does not become the session connection.
+#[derive(Debug)]
+pub struct TestHandle {
+    rx: Receiver<TestOutcome>,
+}
+
+impl TestHandle {
+    pub fn spawn(config: ConnectionConfig) -> TestHandle {
+        let (tx, rx) = mpsc::channel::<TestOutcome>();
+        thread::spawn(move || {
+            let outcome = match db::connect(&config) {
+                Ok(_engine) => TestOutcome::Ok,
+                Err(e) => TestOutcome::Failed(e.to_string()),
+            };
+            let _ = tx.send(outcome);
+        });
+        TestHandle { rx }
+    }
+
+    /// The outcome if the attempt has finished, else `None`.
+    pub fn try_recv(&self) -> Option<TestOutcome> {
+        self.rx.try_recv().ok()
+    }
+}
+
 fn run(
     config: ConnectionConfig,
     req_rx: Receiver<WorkerRequest>,

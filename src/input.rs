@@ -8,6 +8,7 @@
 use edtui::EditorMode;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::app::conn_form::{ConnectionDraft, FormFocus};
 use crate::app::editor::{CellEditor, TextInput};
 use crate::app::state::{App, ControlsField, Focus, Screen};
 use crate::model::value::{TypeAffinity, Value};
@@ -25,7 +26,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
 
     match &app.screen {
-        Screen::Picker { .. } => handle_picker(app, key),
+        Screen::Picker(_) => handle_picker(app, key),
+        Screen::ConnectionForm(_) => handle_form(app, key),
         Screen::Connecting => handle_connecting(app, key),
         Screen::Fatal(_) => handle_fatal(app, key),
         Screen::Browser => handle_browser(app, key),
@@ -33,23 +35,123 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_picker(app: &mut App, key: KeyEvent) {
-    let Screen::Picker { selected } = &mut app.screen else {
+    // Management chords. Single letters are reserved for the fuzzy query, so
+    // create/edit/delete are Ctrl-modified.
+    if is_ctrl(&key, 'a') {
+        app.picker_new();
         return;
-    };
-    let count = app.config.connections.len();
+    }
+    if is_ctrl(&key, 'e') {
+        app.picker_edit();
+        return;
+    }
+    if is_ctrl(&key, 'x') {
+        app.picker_delete();
+        return;
+    }
+    // fzf-style navigation.
+    if is_ctrl(&key, 'n') {
+        move_picker(app, 1);
+        return;
+    }
+    if is_ctrl(&key, 'p') {
+        move_picker(app, -1);
+        return;
+    }
+    if is_ctrl(&key, 'w') {
+        with_picker_query(app, TextInput::delete_word);
+        return;
+    }
+    if is_ctrl(&key, 'u') {
+        with_picker_query(app, TextInput::delete_to_start);
+        return;
+    }
+
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-        KeyCode::Up | KeyCode::Char('k') => {
-            *selected = selected.saturating_sub(1);
-        }
-        KeyCode::Down | KeyCode::Char('j') if *selected + 1 < count => {
-            *selected += 1;
-        }
-        KeyCode::Enter => {
-            let index = *selected;
-            app.start_connection(index);
-        }
+        KeyCode::Enter => app.picker_connect(),
+        KeyCode::Esc => picker_escape(app),
+        KeyCode::Down => move_picker(app, 1),
+        KeyCode::Up => move_picker(app, -1),
+        KeyCode::Backspace => with_picker_query(app, TextInput::backspace),
+        KeyCode::Delete => with_picker_query(app, TextInput::delete),
+        // Cursor motion does not change the query, so it must not re-rank.
+        KeyCode::Left => with_picker_cursor(app, TextInput::left),
+        KeyCode::Right => with_picker_cursor(app, TextInput::right),
+        KeyCode::Home => with_picker_cursor(app, TextInput::home),
+        KeyCode::End => with_picker_cursor(app, TextInput::end),
+        KeyCode::Char(c) => with_picker_query(app, |input| input.insert(c)),
         _ => {}
+    }
+}
+
+/// The connection form is modal, vim-style: a normal mode that navigates
+/// between fields and a per-text-field insert mode. Save (Ctrl+S) and test
+/// (Ctrl+T) work from either mode.
+fn handle_form(app: &mut App, key: KeyEvent) {
+    if is_ctrl(&key, 's') {
+        app.form_save();
+        return;
+    }
+    if is_ctrl(&key, 't') {
+        app.form_test();
+        return;
+    }
+
+    let editing = matches!(&app.screen, Screen::ConnectionForm(draft) if draft.focus.is_editing());
+    if editing {
+        handle_form_insert(app, key);
+    } else {
+        handle_form_normal(app, key);
+    }
+}
+
+fn handle_form_normal(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => app.form_cancel(),
+        KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => with_form(app, ConnectionDraft::focus_next),
+        KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => with_form(app, ConnectionDraft::focus_prev),
+        // Left/Right cycle the engine (only the engine field reacts).
+        KeyCode::Char('h') | KeyCode::Left => with_form(app, |d| d.cycle_engine(false)),
+        KeyCode::Char('l') | KeyCode::Right => with_form(app, |d| d.cycle_engine(true)),
+        // Enter edits a text field; on the engine selector it just advances.
+        KeyCode::Enter | KeyCode::Char('i') => form_enter(app),
+        _ => {}
+    }
+}
+
+fn handle_form_insert(app: &mut App, key: KeyEvent) {
+    if is_ctrl(&key, 'w') {
+        with_form_input(app, TextInput::delete_word);
+        return;
+    }
+    if is_ctrl(&key, 'u') {
+        with_form_input(app, TextInput::delete_to_start);
+        return;
+    }
+
+    match key.code {
+        // Esc leaves insert mode in place; Enter leaves and jumps to the next field.
+        KeyCode::Esc => with_form(app, ConnectionDraft::end_edit),
+        KeyCode::Enter => with_form(app, ConnectionDraft::focus_next),
+        KeyCode::Backspace => with_form_input(app, TextInput::backspace),
+        KeyCode::Delete => with_form_input(app, TextInput::delete),
+        KeyCode::Left => with_form_input(app, TextInput::left),
+        KeyCode::Right => with_form_input(app, TextInput::right),
+        KeyCode::Home => with_form_input(app, TextInput::home),
+        KeyCode::End => with_form_input(app, TextInput::end),
+        KeyCode::Char(c) => with_form_input(app, |input| input.insert(c)),
+        _ => {}
+    }
+}
+
+/// Enter in normal mode: begin editing a text field, or advance past the engine.
+fn form_enter(app: &mut App) {
+    if let Screen::ConnectionForm(draft) = &mut app.screen {
+        if draft.focus == FormFocus::Engine {
+            draft.focus_next();
+        } else {
+            draft.begin_edit();
+        }
     }
 }
 
@@ -66,6 +168,12 @@ fn handle_fatal(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_browser(app: &mut App, key: KeyEvent) {
+    // Ctrl+O opens the connection picker, keeping the current session so it can
+    // be cancelled back to.
+    if is_ctrl(&key, 'o') {
+        app.open_picker();
+        return;
+    }
     // Ctrl+R runs the query pane from anywhere (intercepted before edtui).
     if is_ctrl(&key, 'r') {
         app.run_query_pane();
@@ -518,6 +626,68 @@ fn with_finder_cursor(app: &mut App, op: impl FnOnce(&mut TextInput)) {
 fn move_finder(app: &mut App, delta: isize) {
     if let Focus::TableFinder(finder) = &mut app.browser.focus {
         finder.move_selection(delta);
+    }
+}
+
+// --- picker helpers --------------------------------------------------------
+
+/// Move the picker selection, cancelling any armed confirmation.
+fn move_picker(app: &mut App, delta: isize) {
+    if let Screen::Picker(picker) = &mut app.screen {
+        picker.prompt = None;
+        picker.finder.move_selection(delta);
+    }
+}
+
+/// Apply an edit to the picker's fuzzy query and re-rank. Editing the query
+/// also cancels any armed confirmation.
+fn with_picker_query(app: &mut App, op: impl FnOnce(&mut TextInput)) {
+    if let Screen::Picker(picker) = &mut app.screen {
+        op(&mut picker.finder.input);
+        picker.finder.recompute();
+        picker.prompt = None;
+    }
+}
+
+/// Move the picker query cursor without re-ranking (the query is unchanged).
+fn with_picker_cursor(app: &mut App, op: impl FnOnce(&mut TextInput)) {
+    if let Screen::Picker(picker) = &mut app.screen {
+        op(&mut picker.finder.input);
+    }
+}
+
+/// Leave the picker: cancel an armed confirmation first; otherwise return to the
+/// live session if there is one, else quit.
+fn picker_escape(app: &mut App) {
+    let has_prompt = matches!(&app.screen, Screen::Picker(picker) if picker.prompt.is_some());
+    if has_prompt {
+        if let Screen::Picker(picker) = &mut app.screen {
+            picker.prompt = None;
+        }
+        return;
+    }
+    if app.worker.is_some() {
+        app.screen = Screen::Browser;
+    } else {
+        app.should_quit = true;
+    }
+}
+
+// --- connection form helpers -----------------------------------------------
+
+fn with_form(app: &mut App, op: impl FnOnce(&mut ConnectionDraft)) {
+    if let Screen::ConnectionForm(draft) = &mut app.screen {
+        op(draft);
+    }
+}
+
+/// Apply an edit to the focused text field, but only when it is in insert mode
+/// ([`ConnectionDraft::editing_input`] gates this).
+fn with_form_input(app: &mut App, op: impl FnOnce(&mut TextInput)) {
+    if let Screen::ConnectionForm(draft) = &mut app.screen
+        && let Some(input) = draft.editing_input()
+    {
+        op(input);
     }
 }
 
