@@ -1369,26 +1369,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "normal-sql"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "bytes",
- "crossterm",
- "dirs",
- "edtui",
- "fuzzy-matcher",
- "mysql",
- "postgres",
- "ratatui",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "toml",
-]
-
-[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2323,6 +2303,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "suzume-sql"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "bytes",
+ "crossterm",
+ "dirs",
+ "edtui",
+ "fuzzy-matcher",
+ "mysql",
+ "postgres",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]

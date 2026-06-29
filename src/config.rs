@@ -1,6 +1,6 @@
 //! Connection configuration loaded from a TOML file.
 //!
-//! Example `normal-sql.toml`:
+//! Example `suzume-sql.toml`:
 //!
 //! [[connections]]
 //! name = "local"
@@ -92,7 +92,7 @@ pub struct Config {
 
 impl Config {
     pub fn default_os_config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|dir| dir.join("normal-sql").join(CONFIG_FILE))
+        dirs::config_dir().map(|dir| dir.join("suzume-sql").join(CONFIG_FILE))
     }
 
     pub fn load_or_create(path: &str) -> Result<Config, ConfigError> {
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn load_missing_file_yields_empty_config() {
-        let config = Config::load_or_create("/no/such/normal-sql/connections.toml").expect("missing is ok");
+        let config = Config::load_or_create("/no/such/suzume-sql/connections.toml").expect("missing is ok");
         assert!(config.connections.is_empty());
     }
 

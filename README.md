@@ -1,8 +1,10 @@
-# normal-sql
+# suzume-sql
 
-normal-sql is just a normal sql tui application for navigating your database.
+**suzume-sql** is just simple application to navigate your databases.
 
 I wanted a simple and fast way to navigate my databases without having to use a full blown GUI application and without ever leaving the keyboard, so I made this application.
+
+Suzume are small, nimble and efficient birds that are very common in Japan, and as I like birds and this application is just like them, I decided to name it suzume-sql (even though it is not as cute as them).
 
 ## Features
 
@@ -17,27 +19,30 @@ Some of the features are the following:
 - Simple autocompletion for table names and columns.
 - Inspecting a row or cell with proper formatting (json, timestamps, etc).
 
+Currently mouse is not supported, but it is planned to be added in the future.
+
 ## Installation
 
-The application is not uploaded to crates.io yet, so you can install from this repo with `cargo install --git https://github.com/Alexrp02/normal-sql.git`.
+The application is not uploaded to crates.io yet, but you can install from this repo with `cargo install --git https://github.com/Alexrp02/suzume-sql.git`.
 
 ## Usage
 
 The first argument is a connection. If it carries a `scheme://` prefix it is used as a direct connection string (bypassing the config file); otherwise it is a connection name looked up in the config file:
 
 ```sh
-normal-sql local                                      # connection named "local" in the config
-normal-sql sqlite://./demo.db                         # sqlite (the sqlite:// prefix is required)
-normal-sql postgresql://user:pass@localhost:5432/app  # postgres
-normal-sql mysql://user:pass@localhost:3306/app       # mysql
+suzume local                                      # connection named "local" in the config
+suzume sqlite://./demo.db                         # sqlite (the sqlite:// prefix is required)
+suzume postgresql://user:pass@localhost:5432/app  # postgres
+suzume mysql://user:pass@localhost:3306/app       # mysql
 ```
 
-With no argument, normal-sql looks for `normal-sql.toml` in the current working directory (use -c/--config <path> to point it elsewhere). If the config defines more than one connection, an interactive picker is shown.
+With no argument, suzume-sql loads the config from the default config dirs of the different os (use -c/--config <path> to point it elsewhere).
+When opening the application, a picker will show where you can select/create/modify/delete connections.
 
 This is an example of a configuration file:
 
 ```toml
-# normal-sql.toml
+# suzume-sql.toml
 [[connections]]
 name = "local"
 engine = "sqlite"
@@ -55,4 +60,4 @@ url = "mysql://user:pass@localhost:3306/app"
 ```
 
 > [!NOTE]
-> This application has been generated with AI, so expect a lot of the code to be a bit messy and unoptimized (I haven't reviewed all of the code in detail). If you want to contribute, please feel free to do so.
+> This application has been developed with AI and partially reviewed by a human (I have reviewed the vast majority, but some things haven't been reviewed so you can expect some parts of the code to be messier). I wanted to develop this application quickly, so everything ui related hasn't been deeply reviewed (just the surface of it, as I don't know ratatui and don't have the time to learn it right now). If you want to contribute, please feel free to do so! Even just an issue or directly a pull request will help making the application better.

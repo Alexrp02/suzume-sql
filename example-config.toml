@@ -1,0 +1,24 @@
+# suzume-sql connection config.
+#
+# Run with:   suzume                               (uses config in os config dir; shows a picker)
+#             suzume local                         (open the connection named "local")
+#             suzume -c path.toml                  (use a different config file)
+#             suzume postgresql://u:p@host/db      (connect directly via a connection string)
+#             suzume sqlite://./demo.db            (sqlite needs the sqlite:// prefix)
+
+[[connections]]
+name = "local"
+engine = "sqlite"
+path = "./demo.db"
+
+# Example PostgreSQL connection (uncomment and adjust):
+# [[connections]]
+# name = "prod"
+# engine = "postgres"
+# url = "postgresql://user:password@localhost:5432/app"
+
+# Example MySQL connection (uncomment and adjust):
+# [[connections]]
+# name = "i4c prod"
+# engine = "mysql"
+# url = "mysql://user:password@host:3306/database"

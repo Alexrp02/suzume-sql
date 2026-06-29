@@ -1,4 +1,4 @@
-//! normal-sql: a table-first terminal database client.
+//! suzume-sql: a table-first terminal database client.
 //!
 //! The UI thread owns the render/event loop and never touches the database
 //! directly; all I/O happens on the worker thread (see [`worker`]).
@@ -23,7 +23,7 @@ use crate::config::Config;
 use crate::error::ConfigError;
 
 /// Fallback config path used when the OS config directory cannot be resolved.
-const FALLBACK_CONFIG: &str = "normal-sql.toml";
+const FALLBACK_CONFIG: &str = "suzume-sql.toml";
 const TICK: Duration = Duration::from_millis(120);
 
 struct Args {
@@ -45,7 +45,7 @@ fn main() {
     let config = match resolve_config(&args) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("normal-sql: {e}");
+            eprintln!("suzume: {e}");
             if let ConfigError::Read { .. } = e {
                 eprintln!("(expected a config file at `{}`)", args.config_path);
             }
@@ -55,7 +55,7 @@ fn main() {
 
     let app = App::new(config, args.config_path);
     if let Err(e) = run(app) {
-        eprintln!("normal-sql: {e}");
+        eprintln!("suzume: {e}");
         std::process::exit(1);
     }
 }
@@ -125,7 +125,7 @@ fn parse_args() -> ParseOutcome {
                 if let Some(path) = args.next() {
                     config_path = path;
                 } else {
-                    eprintln!("normal-sql: --config requires a path");
+                    eprintln!("suzume: --config requires a path");
                     std::process::exit(2);
                 }
             }
@@ -150,11 +150,11 @@ fn default_config_path() -> String {
 fn print_help() {
     let default_path = default_config_path();
     println!(
-        r#"normal-sql — table-first terminal database client
+        r#"suzume-sql — table-first terminal database client
 
 USAGE:
-    normal-sql [connection]
-    normal-sql [--config <path>]
+    suzume [connection]
+    suzume [--config <path>]
 
 ARGS:
     [connection]   A connection string (identified by its scheme://), or

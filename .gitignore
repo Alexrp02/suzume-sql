@@ -2,3 +2,4 @@
 
 # Local demo database created from the sample config
 /demo.db
+/normal-sql.toml
