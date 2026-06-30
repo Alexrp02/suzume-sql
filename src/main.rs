@@ -40,6 +40,10 @@ fn main() {
             print_help();
             return;
         }
+        ParseOutcome::Version => {
+            println!("suzume-sql {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
     };
 
     let config = match resolve_config(&args) {
@@ -111,6 +115,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<
 enum ParseOutcome {
     Run(Args),
     Help,
+    Version,
 }
 
 fn parse_args() -> ParseOutcome {
@@ -121,6 +126,7 @@ fn parse_args() -> ParseOutcome {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return ParseOutcome::Help,
+            "-v" | "--version" => return ParseOutcome::Version,
             "-c" | "--config" => {
                 if let Some(path) = args.next() {
                     config_path = path;
