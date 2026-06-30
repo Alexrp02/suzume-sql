@@ -2,6 +2,11 @@
 name = "suzume-sql"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
+repository = "https://github.com/Alexrp02/suzume-sql"
+keywords = ["database", "tui", "sql", "mysql", "postgres"]
+categories = ["command-line-utilities", "database"]
+license = "GPL-3.0-or-later"
 
 [[bin]]
 name = "suzume"

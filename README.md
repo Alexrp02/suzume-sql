@@ -61,3 +61,11 @@ url = "mysql://user:pass@localhost:3306/app"
 
 > [!NOTE]
 > This application has been developed with AI and partially reviewed by a human (I have reviewed the vast majority, but some things haven't been reviewed so you can expect some parts of the code to be messier). I wanted to develop this application quickly, so everything ui related hasn't been deeply reviewed (just the surface of it, as I don't know ratatui and don't have the time to learn it right now). If you want to contribute, please feel free to do so! Even just an issue or directly a pull request will help making the application better.
+
+## License
+
+suzume-sql is free and open-source software, licensed under the **GNU General Public License v3.0 or later** (see [LICENSE](LICENSE)). You are free to use, study, modify, and redistribute it — including at work or in your business — and any distributed fork must remain under the same license.
+
+## Contributing
+
+Contributions are more than welcome! By submitting a pull request you agree that your contribution is licensed under the project's [GPL-3.0-or-later license](LICENSE) (inbound = outbound). See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
