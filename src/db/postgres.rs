@@ -45,8 +45,7 @@ impl DatabaseEngine for PostgresEngine {
         let mut tables = Vec::with_capacity(rows.len());
         for row in rows {
             let name: String = row.try_get(0).map_err(|e| DbError::Schema(e.to_string()))?;
-            let table_type: String =
-                row.try_get(1).map_err(|e| DbError::Schema(e.to_string()))?;
+            let table_type: String = row.try_get(1).map_err(|e| DbError::Schema(e.to_string()))?;
             let kind = if table_type == "VIEW" {
                 RelationKind::View
             } else {
@@ -72,9 +71,8 @@ impl DatabaseEngine for PostgresEngine {
         for row in rows {
             let mut values = Vec::with_capacity(row.len());
             for i in 0..row.len() {
-                let cell: Option<String> = row
-                    .try_get(i)
-                    .map_err(|e| DbError::Query(e.to_string()))?;
+                let cell: Option<String> =
+                    row.try_get(i).map_err(|e| DbError::Query(e.to_string()))?;
                 values.push(match cell {
                     Some(text) => Value::Text(text),
                     None => Value::Null,
@@ -139,9 +137,9 @@ impl DatabaseEngine for PostgresEngine {
             .transaction()
             .map_err(|e| DbError::Commit(e.to_string()))?;
         for mutation in mutations {
-            let table_meta = catalog.find(mutation.table()).ok_or_else(|| {
-                DbError::Commit(format!("unknown table `{}`", mutation.table()))
-            })?;
+            let table_meta = catalog
+                .find(mutation.table())
+                .ok_or_else(|| DbError::Commit(format!("unknown table `{}`", mutation.table())))?;
             let stmt = build_statement(Dialect::Postgres, table_meta, mutation);
             let affected = exec_statement(&mut tx, &stmt)?;
             if stmt.requires_single_row_check && affected != 1 {
@@ -191,8 +189,7 @@ impl PostgresEngine {
         let mut columns = Vec::with_capacity(rows.len());
         for row in rows {
             let name: String = row.try_get(0).map_err(|e| DbError::Schema(e.to_string()))?;
-            let data_type: String =
-                row.try_get(1).map_err(|e| DbError::Schema(e.to_string()))?;
+            let data_type: String = row.try_get(1).map_err(|e| DbError::Schema(e.to_string()))?;
             columns.push(ColumnMeta {
                 affinity: TypeAffinity::from_declared(&data_type),
                 is_primary_key: pk_columns.iter().any(|c| c == &name),
@@ -205,8 +202,11 @@ impl PostgresEngine {
 }
 
 fn exec_statement(tx: &mut Transaction<'_>, stmt: &ParamStatement) -> Result<u64, DbError> {
-    let params: Vec<&(dyn ToSql + Sync)> =
-        stmt.params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+    let params: Vec<&(dyn ToSql + Sync)> = stmt
+        .params
+        .iter()
+        .map(|p| p as &(dyn ToSql + Sync))
+        .collect();
     tx.execute(&stmt.sql, &params)
         .map_err(|e| DbError::Commit(e.to_string()))
 }

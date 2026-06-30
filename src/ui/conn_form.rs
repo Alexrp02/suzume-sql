@@ -32,7 +32,14 @@ pub fn render(frame: &mut Frame, draft: &ConnectionDraft) {
         return;
     }
 
-    let [name_area, engine_area, value_area, _gap, test_area, footer_area] = Layout::vertical([
+    let [
+        name_area,
+        engine_area,
+        value_area,
+        _gap,
+        test_area,
+        footer_area,
+    ] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -90,7 +97,9 @@ fn hint(editing: bool) -> &'static str {
 
 fn label_style(focused: bool) -> Style {
     if focused {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     }
@@ -151,7 +160,9 @@ fn test_line(status: &TestStatus) -> Line<'static> {
         )),
         TestStatus::Ok => Line::from(Span::styled(
             "  ✓ Connection succeeded".to_string(),
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         )),
         TestStatus::Failed(msg) => Line::from(Span::styled(
             format!("  ✗ {msg}"),

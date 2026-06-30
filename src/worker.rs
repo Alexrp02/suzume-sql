@@ -9,8 +9,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::config::ConnectionConfig;
-use crate::db::{self, DatabaseEngine};
 use crate::db::query::SelectQuery;
+use crate::db::{self, DatabaseEngine};
 use crate::model::delta::RowMutation;
 use crate::model::schema::Catalog;
 use crate::model::value::Value;
@@ -21,9 +21,15 @@ pub enum WorkerRequest {
     HarvestSchema,
     /// Run a browse query. `id` lets the UI discard stale results when the user
     /// has moved on to a newer query.
-    RunSelect { id: u64, query: SelectQuery },
+    RunSelect {
+        id: u64,
+        query: SelectQuery,
+    },
     /// Run a raw custom query from the query pane.
-    RunRawQuery { id: u64, sql: String },
+    RunRawQuery {
+        id: u64,
+        sql: String,
+    },
     Commit(Vec<RowMutation>),
     Shutdown,
 }
@@ -34,7 +40,10 @@ pub enum WorkerResponse {
     /// The connection was established; the UI may now request the schema.
     Connected,
     Schema(Catalog),
-    Rows { id: u64, rows: Vec<Vec<Value>> },
+    Rows {
+        id: u64,
+        rows: Vec<Vec<Value>>,
+    },
     /// Result of a raw custom query: columns are discovered from the result.
     RawRows {
         id: u64,
@@ -122,11 +131,7 @@ impl TestHandle {
     }
 }
 
-fn run(
-    config: ConnectionConfig,
-    req_rx: Receiver<WorkerRequest>,
-    resp_tx: Sender<WorkerResponse>,
-) {
+fn run(config: ConnectionConfig, req_rx: Receiver<WorkerRequest>, resp_tx: Sender<WorkerResponse>) {
     let mut engine: Box<dyn DatabaseEngine> = match db::connect(&config) {
         Ok(engine) => engine,
         Err(e) => {
@@ -165,12 +170,10 @@ fn run(
                 },
                 Err(e) => WorkerResponse::Failed(e.to_string()),
             },
-            WorkerRequest::Commit(mutations) => {
-                match engine.commit(&mutations, &catalog) {
-                    Ok(()) => WorkerResponse::Committed,
-                    Err(e) => WorkerResponse::Failed(e.to_string()),
-                }
-            }
+            WorkerRequest::Commit(mutations) => match engine.commit(&mutations, &catalog) {
+                Ok(()) => WorkerResponse::Committed,
+                Err(e) => WorkerResponse::Failed(e.to_string()),
+            },
         };
         if resp_tx.send(response).is_err() {
             break;

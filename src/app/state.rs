@@ -13,7 +13,7 @@ use crate::app::picker::{PickerPrompt, PickerState};
 use crate::clipboard::ClipboardSink;
 use crate::config::Config;
 use crate::db::query::SelectQuery;
-use crate::model::delta::{KeyPart, CellDelta, RowKey, RowMutation};
+use crate::model::delta::{CellDelta, KeyPart, RowKey, RowMutation};
 use crate::model::schema::{Catalog, ColumnMeta};
 use crate::model::value::{TypeAffinity, Value};
 use crate::worker::{TestHandle, TestOutcome, WorkerHandle, WorkerRequest, WorkerResponse};
@@ -78,7 +78,10 @@ pub enum ControlsField {
 /// [`BrowserState`] because its pane is always shown, focused or not.
 pub enum Focus {
     /// Pane 1: editing the filter or order field.
-    Controls { field: ControlsField, input: TextInput },
+    Controls {
+        field: ControlsField,
+        input: TextInput,
+    },
     /// Pane 2: the catalog/table list.
     Catalog,
     /// Pane 3: the vim-style SQL query editor.
@@ -244,10 +247,7 @@ impl GridView {
         // `preserve_order` keeps the map in column order.
         let mut object = serde_json::Map::with_capacity(self.columns.len());
         for (col, column) in self.columns.iter().enumerate() {
-            let value = self
-                .display_value(row, col)
-                .cloned()
-                .unwrap_or(Value::Null);
+            let value = self.display_value(row, col).cloned().unwrap_or(Value::Null);
             object.insert(column.name.clone(), value.to_json());
         }
         serde_json::to_string(&serde_json::Value::Object(object)).ok()
@@ -851,7 +851,10 @@ impl App {
         // Move focus to the results so they can be inspected immediately.
         self.browser.focus = Focus::Data;
         if truncated {
-            self.info(format!("{count} rows (capped at {})", crate::db::RAW_ROW_CAP));
+            self.info(format!(
+                "{count} rows (capped at {})",
+                crate::db::RAW_ROW_CAP
+            ));
         } else {
             self.info(format!("{count} row(s) from query"));
         }
@@ -927,7 +930,9 @@ impl App {
     /// the focus is completable.
     fn focused_prefix(&self) -> Option<String> {
         match &self.browser.focus {
-            Focus::Query => Some(crate::app::completion::editor_prefix(&self.browser.query.state)),
+            Focus::Query => Some(crate::app::completion::editor_prefix(
+                &self.browser.query.state,
+            )),
             Focus::Controls { input, .. } => Some(crate::app::completion::field_prefix(
                 &input.text(),
                 input.cursor(),
@@ -1455,8 +1460,7 @@ mod tests {
         let mut browser = BrowserState::new();
         browser.sidebar.names = vec!["users".to_string()];
         browser.focus = Focus::Query;
-        browser.query.state =
-            EditorState::new(Lines::from("SELECT *\nFROM users\nWHERE age > 30"));
+        browser.query.state = EditorState::new(Lines::from("SELECT *\nFROM users\nWHERE age > 30"));
 
         let mut app = App {
             config: Config {

@@ -19,12 +19,11 @@ use crate::model::schema::Catalog;
 
 /// A static set of common SQL keywords offered as completions.
 const KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
-    "FULL", "CROSS", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "OFFSET",
-    "AS", "AND", "OR", "NOT", "NULL", "IS", "IN", "LIKE", "BETWEEN",
-    "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "INSERT", "INTO", "VALUES",
-    "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "DROP", "ALTER", "UNION",
-    "ALL", "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END", "ASC", "DESC",
+    "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "ON",
+    "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "OFFSET", "AS", "AND", "OR", "NOT", "NULL", "IS",
+    "IN", "LIKE", "BETWEEN", "DISTINCT", "COUNT", "SUM", "AVG", "MIN", "MAX", "INSERT", "INTO",
+    "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "DROP", "ALTER", "UNION", "ALL",
+    "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END", "ASC", "DESC",
 ];
 
 /// Keywords after which the cursor is naming a relation rather than a column.

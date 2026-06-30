@@ -67,7 +67,12 @@ impl SelectQuery {
         };
 
         let mut sql = format!("SELECT {cols} FROM {}", dialect.quote_ident(&self.table));
-        if let Some(filter) = self.filter.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+        if let Some(filter) = self
+            .filter
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+        {
             sql.push_str(" WHERE ");
             sql.push_str(filter);
         }
@@ -129,7 +134,14 @@ fn build_update(
     let set_clause = changes
         .iter()
         .map(|c| {
-            let ph = placeholder(dialect, table_meta, &c.column, c.new.clone(), &mut params, &mut next_index);
+            let ph = placeholder(
+                dialect,
+                table_meta,
+                &c.column,
+                c.new.clone(),
+                &mut params,
+                &mut next_index,
+            );
             format!("{} = {ph}", dialect.quote_ident(&c.column))
         })
         .collect::<Vec<_>>()

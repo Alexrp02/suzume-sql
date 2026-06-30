@@ -33,11 +33,7 @@ impl TypeAffinity {
             TypeAffinity::Json
         } else if t.contains("bool") {
             TypeAffinity::Boolean
-        } else if t.contains("int")
-            || t == "serial"
-            || t == "bigserial"
-            || t == "smallserial"
-        {
+        } else if t.contains("int") || t == "serial" || t == "bigserial" || t == "smallserial" {
             TypeAffinity::Integer
         } else if t.contains("char") || t.contains("text") || t.contains("clob") {
             TypeAffinity::Text
@@ -177,13 +173,19 @@ mod tests {
 
     #[test]
     fn classifies_declared_types() {
-        assert_eq!(TypeAffinity::from_declared("INTEGER"), TypeAffinity::Integer);
+        assert_eq!(
+            TypeAffinity::from_declared("INTEGER"),
+            TypeAffinity::Integer
+        );
         assert_eq!(TypeAffinity::from_declared("bigint"), TypeAffinity::Integer);
         assert_eq!(
             TypeAffinity::from_declared("character varying"),
             TypeAffinity::Text
         );
-        assert_eq!(TypeAffinity::from_declared("boolean"), TypeAffinity::Boolean);
+        assert_eq!(
+            TypeAffinity::from_declared("boolean"),
+            TypeAffinity::Boolean
+        );
         assert_eq!(TypeAffinity::from_declared("numeric"), TypeAffinity::Real);
         assert_eq!(TypeAffinity::from_declared("bytea"), TypeAffinity::Blob);
         assert_eq!(TypeAffinity::from_declared("json"), TypeAffinity::Json);
@@ -218,7 +220,10 @@ mod tests {
 
     #[test]
     fn parses_by_affinity() {
-        assert_eq!(Value::parse("42", TypeAffinity::Integer), Value::Integer(42));
+        assert_eq!(
+            Value::parse("42", TypeAffinity::Integer),
+            Value::Integer(42)
+        );
         // Empty input is NULL for non-text columns...
         assert_eq!(Value::parse("", TypeAffinity::Integer), Value::Null);
         // ...but the empty string for text columns.
@@ -242,7 +247,10 @@ mod tests {
     fn null_has_no_sql_text() {
         assert_eq!(Value::Null.to_sql_text(), None);
         assert_eq!(Value::Integer(7).to_sql_text(), Some("7".to_string()));
-        assert_eq!(Value::Boolean(false).to_sql_text(), Some("false".to_string()));
+        assert_eq!(
+            Value::Boolean(false).to_sql_text(),
+            Some("false".to_string())
+        );
     }
 
     #[test]

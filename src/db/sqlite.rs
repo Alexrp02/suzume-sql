@@ -33,9 +33,7 @@ impl DatabaseEngine for SqliteEngine {
                      ORDER BY name",
                 )
                 .map_err(|e| DbError::Schema(e.to_string()))?;
-            let mut rows = stmt
-                .query([])
-                .map_err(|e| DbError::Schema(e.to_string()))?;
+            let mut rows = stmt.query([]).map_err(|e| DbError::Schema(e.to_string()))?;
             while let Some(row) = rows.next().map_err(|e| DbError::Schema(e.to_string()))? {
                 let name: String = row.get(0).map_err(|e| DbError::Schema(e.to_string()))?;
                 let kind: String = row.get(1).map_err(|e| DbError::Schema(e.to_string()))?;
@@ -68,15 +66,11 @@ impl DatabaseEngine for SqliteEngine {
             .map_err(|e| DbError::Query(e.to_string()))?;
         let column_count = stmt.column_count();
         let mut out = Vec::new();
-        let mut rows = stmt
-            .query([])
-            .map_err(|e| DbError::Query(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| DbError::Query(e.to_string()))?;
         while let Some(row) = rows.next().map_err(|e| DbError::Query(e.to_string()))? {
             let mut values = Vec::with_capacity(column_count);
             for i in 0..column_count {
-                let value_ref = row
-                    .get_ref(i)
-                    .map_err(|e| DbError::Query(e.to_string()))?;
+                let value_ref = row.get_ref(i).map_err(|e| DbError::Query(e.to_string()))?;
                 values.push(Value::from(value_ref));
             }
             out.push(values);
@@ -98,9 +92,7 @@ impl DatabaseEngine for SqliteEngine {
 
         let mut out = Vec::new();
         let mut truncated = false;
-        let mut rows = stmt
-            .query([])
-            .map_err(|e| DbError::Query(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| DbError::Query(e.to_string()))?;
         while let Some(row) = rows.next().map_err(|e| DbError::Query(e.to_string()))? {
             if out.len() >= RAW_ROW_CAP {
                 truncated = true;
@@ -108,9 +100,7 @@ impl DatabaseEngine for SqliteEngine {
             }
             let mut values = Vec::with_capacity(column_count);
             for i in 0..column_count {
-                let value_ref = row
-                    .get_ref(i)
-                    .map_err(|e| DbError::Query(e.to_string()))?;
+                let value_ref = row.get_ref(i).map_err(|e| DbError::Query(e.to_string()))?;
                 values.push(Value::from(value_ref));
             }
             out.push(values);
@@ -128,9 +118,9 @@ impl DatabaseEngine for SqliteEngine {
             .transaction()
             .map_err(|e| DbError::Commit(e.to_string()))?;
         for mutation in mutations {
-            let table_meta = catalog.find(mutation.table()).ok_or_else(|| {
-                DbError::Commit(format!("unknown table `{}`", mutation.table()))
-            })?;
+            let table_meta = catalog
+                .find(mutation.table())
+                .ok_or_else(|| DbError::Commit(format!("unknown table `{}`", mutation.table())))?;
             let stmt = build_statement(Dialect::Sqlite, table_meta, mutation);
             let affected = tx
                 .execute(&stmt.sql, params_from_iter(&stmt.params))
@@ -157,9 +147,7 @@ impl SqliteEngine {
             .prepare(&sql)
             .map_err(|e| DbError::Schema(e.to_string()))?;
         let mut columns = Vec::new();
-        let mut rows = stmt
-            .query([])
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| DbError::Schema(e.to_string()))?;
         while let Some(row) = rows.next().map_err(|e| DbError::Schema(e.to_string()))? {
             // table_info columns: cid, name, type, notnull, dflt_value, pk
             let name: String = row.get(1).map_err(|e| DbError::Schema(e.to_string()))?;
@@ -217,7 +205,12 @@ mod tests {
     use super::*;
     use crate::model::delta::{CellDelta, KeyPart, RowKey};
 
-    fn select_all(table: &str, columns: &[&str], filter: Option<&str>, order: Option<&str>) -> SelectQuery {
+    fn select_all(
+        table: &str,
+        columns: &[&str],
+        filter: Option<&str>,
+        order: Option<&str>,
+    ) -> SelectQuery {
         SelectQuery {
             table: table.to_string(),
             columns: columns.iter().map(|c| c.to_string()).collect(),
@@ -366,9 +359,9 @@ mod tests {
         let rows = engine
             .run_select(&select_all("users", &["id", "name"], None, None))
             .expect("verify");
-        assert_eq!(rows, vec![vec![
-            Value::Integer(2),
-            Value::Text("John".to_string()),
-        ]]);
+        assert_eq!(
+            rows,
+            vec![vec![Value::Integer(2), Value::Text("John".to_string()),]]
+        );
     }
 }

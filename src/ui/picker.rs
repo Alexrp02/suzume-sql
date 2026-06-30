@@ -50,7 +50,10 @@ pub fn render(frame: &mut Frame, app: &App, picker: &PickerState) {
         .filter_map(|&i| app.config.connections.get(i))
         .map(|c| {
             ListItem::new(Line::from(vec![
-                Span::styled(c.name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    c.name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     format!("  [{}] ", c.connection.engine_label()),
                     Style::default().fg(Color::Cyan),
@@ -99,7 +102,9 @@ fn footer(app: &App, picker: &PickerState) -> Line<'static> {
         }
         Some(PickerPrompt::ConfirmSwitch(_)) => Line::from(Span::styled(
             "Discard pending edits and switch? Enter to confirm · Esc cancel".to_string(),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         None if app.status.is_error => Line::from(Span::styled(
             app.status.message.clone(),

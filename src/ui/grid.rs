@@ -143,7 +143,12 @@ fn visible_columns(widths: &[usize], first_col: usize, avail: usize) -> usize {
     count.max(1)
 }
 
-fn header_line(app: &App, widths: &[usize], first_col: usize, visible_cols: usize) -> Line<'static> {
+fn header_line(
+    app: &App,
+    widths: &[usize],
+    first_col: usize,
+    visible_cols: usize,
+) -> Line<'static> {
     let grid = &app.browser.grid;
     let mut spans: Vec<Span> = Vec::new();
     for (idx, col) in (first_col..first_col + visible_cols).enumerate() {

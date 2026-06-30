@@ -114,9 +114,9 @@ impl DatabaseEngine for MysqlEngine {
             .start_transaction(TxOpts::default())
             .map_err(|e| DbError::Commit(e.to_string()))?;
         for mutation in mutations {
-            let table_meta = catalog.find(mutation.table()).ok_or_else(|| {
-                DbError::Commit(format!("unknown table `{}`", mutation.table()))
-            })?;
+            let table_meta = catalog
+                .find(mutation.table())
+                .ok_or_else(|| DbError::Commit(format!("unknown table `{}`", mutation.table())))?;
             let stmt = build_statement(Dialect::Mysql, table_meta, mutation);
             let params: Vec<MyValue> = stmt.params.iter().map(to_my_value).collect();
             tx.exec_drop(stmt.sql.as_str(), params)

@@ -30,7 +30,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let Focus::Inspect(inspect) = &app.browser.focus else {
             return;
         };
-        (title(&inspect.target), build_lines(&inspect.target, inner.width as usize))
+        (
+            title(&inspect.target),
+            build_lines(&inspect.target, inner.width as usize),
+        )
     };
 
     let viewport = inner.height as usize;
@@ -76,7 +79,9 @@ fn build_lines(target: &InspectTarget, width: usize) -> Vec<Line<'static>> {
                 }
                 lines.push(Line::from(Span::styled(
                     name.clone(),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 for span in wrap_value(value, width.saturating_sub(2).max(1)) {
                     lines.push(Line::from(vec![Span::raw("  "), span]));
@@ -155,7 +160,10 @@ mod tests {
     fn json_values_are_pretty_printed_over_multiple_lines() {
         let value = Value::Json(r#"{"a":1,"b":[2,3]}"#.to_string());
         let text = display_text(&value);
-        assert!(text.contains('\n'), "pretty JSON should span multiple lines");
+        assert!(
+            text.contains('\n'),
+            "pretty JSON should span multiple lines"
+        );
         assert!(text.contains("\"a\": 1"));
 
         // Malformed JSON degrades to its raw single-line source.

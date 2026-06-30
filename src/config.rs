@@ -167,7 +167,6 @@ impl Config {
             connections: vec![NamedConnection { name, connection }],
         })
     }
-
 }
 
 #[cfg(test)]
@@ -288,7 +287,8 @@ mod tests {
 
     #[test]
     fn load_missing_file_yields_empty_config() {
-        let config = Config::load_or_create("/no/such/suzume-sql/connections.toml").expect("missing is ok");
+        let config =
+            Config::load_or_create("/no/such/suzume-sql/connections.toml").expect("missing is ok");
         assert!(config.connections.is_empty());
     }
 

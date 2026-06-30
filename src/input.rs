@@ -108,8 +108,12 @@ fn handle_form(app: &mut App, key: KeyEvent) {
 fn handle_form_normal(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => app.form_cancel(),
-        KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => with_form(app, ConnectionDraft::focus_next),
-        KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => with_form(app, ConnectionDraft::focus_prev),
+        KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => {
+            with_form(app, ConnectionDraft::focus_next)
+        }
+        KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => {
+            with_form(app, ConnectionDraft::focus_prev)
+        }
         // Left/Right cycle the engine (only the engine field reacts).
         KeyCode::Char('h') | KeyCode::Left => with_form(app, |d| d.cycle_engine(false)),
         KeyCode::Char('l') | KeyCode::Right => with_form(app, |d| d.cycle_engine(true)),

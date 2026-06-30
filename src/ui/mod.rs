@@ -193,7 +193,11 @@ fn render_controls(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
     ));
     spans.push(Span::styled(table_name, Style::default().fg(Color::Green)));
     spans.push(Span::raw("   │   "));
-    spans.extend(field_spans("Filter: ", &app.browser.filter_text, filter_input));
+    spans.extend(field_spans(
+        "Filter: ",
+        &app.browser.filter_text,
+        filter_input,
+    ));
     spans.push(Span::raw("   │   "));
     spans.extend(field_spans("Order: ", &app.browser.order_text, order_input));
 
