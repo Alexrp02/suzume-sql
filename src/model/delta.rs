@@ -50,14 +50,16 @@ pub enum RowMutation {
     },
     Insert {
         table: String,
-        row: Vec<Value>
-    }
+        row: Vec<Value>,
+    },
 }
 
 impl RowMutation {
     pub fn table(&self) -> &str {
         match self {
-            RowMutation::Update { table, .. } | RowMutation::Delete { table, .. } | RowMutation::Insert { table, .. } => table,
+            RowMutation::Update { table, .. }
+            | RowMutation::Delete { table, .. }
+            | RowMutation::Insert { table, .. } => table,
         }
     }
 }

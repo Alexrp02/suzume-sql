@@ -266,10 +266,12 @@ impl GridView {
     /// clears the pending edit instead of recording a no-op.
     pub fn record_edit(&mut self, row: usize, col: usize, new_value: Value) {
         if self.is_pending_insert(row) {
-            self.rows
-                .get_mut(row)
-                .and_then(|r| r.get_mut(col))
-                .map(|v| *v = new_value);
+            if let Some(row) = self.rows.get_mut(row)
+                && let Some(cell) = row.get_mut(col)
+            {
+                *cell = new_value.clone();
+            }
+
             return;
         }
 
