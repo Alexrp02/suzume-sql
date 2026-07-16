@@ -139,6 +139,8 @@ pub struct GridView {
     /// Rows marked for deletion (displayed red); committed as `DELETE`s in the
     /// same transaction as the edits.
     pub pending_deletes: HashSet<usize>,
+    /// New rows to be inserted
+    pub pending_inserts_number: usize,
     pub sel_row: usize,
     pub sel_col: usize,
     /// Views and the no-table state are read-only: editing is disabled.
@@ -152,6 +154,7 @@ impl GridView {
             rows: Vec::new(),
             overlay: HashMap::new(),
             pending_deletes: HashSet::new(),
+            pending_inserts_number: 0,
             sel_row: 0,
             sel_col: 0,
             read_only: true,
@@ -164,6 +167,7 @@ impl GridView {
             rows: Vec::new(),
             overlay: HashMap::new(),
             pending_deletes: HashSet::new(),
+            pending_inserts_number: 0,
             sel_row: 0,
             sel_col: 0,
             read_only,
@@ -174,6 +178,7 @@ impl GridView {
         self.rows = rows.into_iter().map(|row| self.type_row(row)).collect();
         self.overlay.clear();
         self.pending_deletes.clear();
+        self.pending_inserts_number = 0;
         self.clamp_selection();
     }
 
@@ -218,6 +223,10 @@ impl GridView {
         self.pending_deletes.contains(&row)
     }
 
+    pub fn is_pending_insert(&self, row: usize) -> bool {
+        row >= self.rows.len() - self.pending_inserts_number
+    }
+
     /// Toggle the pending-deletion mark on `row`. Marking a row drops any pending
     /// cell edits for it: the row is going away, so those edits are moot.
     pub fn toggle_delete(&mut self, row: usize) {
@@ -256,6 +265,14 @@ impl GridView {
     /// Record an edit at `(row, col)`. Re-setting a cell to its original value
     /// clears the pending edit instead of recording a no-op.
     pub fn record_edit(&mut self, row: usize, col: usize, new_value: Value) {
+        if self.is_pending_insert(row) {
+            self.rows
+                .get_mut(row)
+                .and_then(|r| r.get_mut(col))
+                .map(|v| *v = new_value);
+            return;
+        }
+
         let original = self.rows.get(row).and_then(|r| r.get(col));
         match original {
             Some(orig) if *orig == new_value => {
@@ -306,6 +323,13 @@ impl GridView {
     /// so the two sets never overlap.
     pub fn build_mutations(&self, table: &str) -> Vec<RowMutation> {
         let mut mutations: Vec<RowMutation> = Vec::new();
+
+        for i in self.rows.len() - self.pending_inserts_number..self.rows.len() {
+            mutations.push(RowMutation::Insert {
+                table: table.to_string(),
+                row: self.rows[i].clone(),
+            });
+        }
 
         for &row in &self.pending_deletes {
             let Some(row_values) = self.rows.get(row) else {
@@ -392,6 +416,17 @@ impl GridView {
                 .collect();
             RowKey::PrimaryKey(parts)
         }
+    }
+
+    fn add_row(&mut self, new_row: Vec<Value>) {
+        let typed_row = self.type_row(new_row);
+        self.rows.push(typed_row);
+        self.pending_inserts_number += 1;
+    }
+
+    fn remove_not_inserted_row(&mut self, row_index: usize) {
+        self.rows.remove(row_index);
+        self.pending_inserts_number -= 1;
     }
 }
 
@@ -1111,6 +1146,33 @@ impl App {
         }
     }
 
+    /// Paste a yanked row into the grid as a new row.
+    pub fn paste_row(&mut self) {
+        if self.browser.grid.read_only {
+            self.error("This relation is read-only");
+            return;
+        }
+        let Some(yanked) = &self.clipboard.get_current_text() else {
+            self.info("No yanked row to paste");
+            return;
+        };
+        match serde_json::from_str::<serde_json::Value>(yanked) {
+            Ok(serde_json::Value::Object(map)) => {
+                let mut new_row = vec![Value::Null; self.browser.grid.col_count()];
+                for (col, meta) in self.browser.grid.columns.iter().enumerate() {
+                    if let Some(value) = map.get(&meta.name) {
+                        new_row[col] = Value::from_json(value);
+                    }
+                }
+                self.browser.grid.add_row(new_row);
+                self.info("Pasted yanked row");
+            }
+            _ => {
+                self.error("Yanked content is not a valid JSON object for a row");
+            }
+        }
+    }
+
     /// Common yank path: record the value and best-effort copy to the clipboard.
     fn yank(&mut self, text: String, label: &str) {
         let copied = self.clipboard.copy(&text);
@@ -1193,6 +1255,10 @@ impl App {
             return;
         }
         let row = self.browser.grid.sel_row;
+        if self.browser.grid.is_pending_insert(row) {
+            self.browser.grid.remove_not_inserted_row(row);
+            return;
+        }
         let was_marked = self.browser.grid.is_pending_delete(row);
         self.browser.grid.toggle_delete(row);
         if was_marked {

@@ -34,4 +34,11 @@ impl ClipboardSink {
             None => false,
         }
     }
+
+    pub fn get_current_text(&mut self) -> Option<String> {
+        match &mut self.inner {
+            Some(clipboard) => clipboard.get_text().ok(),
+            None => None,
+        }
+    }
 }

@@ -118,6 +118,7 @@ pub fn build_statement(
             changes,
         } => build_update(dialect, table_meta, table, key, changes),
         RowMutation::Delete { table, key } => build_delete(dialect, table_meta, table, key),
+        RowMutation::Insert { table, row } => build_insert(dialect, table_meta, table, row),
     }
 }
 
@@ -183,6 +184,50 @@ fn build_delete(
         sql,
         params,
         requires_single_row_check,
+    }
+}
+
+fn build_insert(
+    dialect: Dialect,
+    table_meta: &TableMeta,
+    table: &str,
+    row: &[Value],
+) -> ParamStatement {
+    let mut params: Vec<Value> = Vec::new();
+    let mut next_index = 0usize;
+
+    let columns = table_meta
+        .columns
+        .iter()
+        .map(|c| dialect.quote_ident(&c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let placeholders = row
+        .iter()
+        .enumerate()
+        .map(|(i, value)| {
+            placeholder(
+                dialect,
+                table_meta,
+                &table_meta.columns[i].name,
+                value.clone(),
+                &mut params,
+                &mut next_index,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let sql = format!(
+        "INSERT INTO {} ({columns}) VALUES ({placeholders})",
+        dialect.quote_ident(table)
+    );
+
+    ParamStatement {
+        sql,
+        params,
+        requires_single_row_check: false,
     }
 }
 

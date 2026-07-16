@@ -127,6 +127,28 @@ impl Value {
         }
     }
 
+    pub fn from_json(json: &serde_json::Value) -> Value {
+        match json {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Boolean(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Integer(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Real(f)
+                } else {
+                    // JSON numbers are either i64 or f64; this should not happen.
+                    Value::Null
+                }
+            }
+            serde_json::Value::String(s) => Value::Text(s.clone()),
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                // Serialize the JSON value back to a string for storage.
+                Value::Json(json.to_string())
+            }
+        }
+    }
+
     /// The text representation used both for display and as the textual SQL
     /// parameter form on engines that bind everything as text (Postgres).
     /// Returns `None` for `NULL`.

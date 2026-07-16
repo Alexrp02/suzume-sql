@@ -209,6 +209,7 @@ fn data_line(
         let is_null = value.map(|v| v.is_null()).unwrap_or(true);
         let text = value.map(|v| v.to_string()).unwrap_or_default();
         let dirty = grid.is_dirty(row, col);
+        let is_pending_insert = grid.is_pending_insert(row);
 
         let mut style = Style::default();
         if is_null {
@@ -216,6 +217,9 @@ fn data_line(
         }
         if dirty {
             style = style.fg(AMBER).add_modifier(Modifier::BOLD);
+        }
+        if is_pending_insert {
+            style = style.fg(Color::Green).add_modifier(Modifier::BOLD);
         }
         // A row marked for deletion overrides any per-cell colouring.
         if pending_delete {
