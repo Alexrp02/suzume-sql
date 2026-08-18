@@ -9,6 +9,8 @@
 //! (`$n::text::<type>`), so the server does the conversion for any type without
 //! binary encoding. See `build_update` for why the `::text` step is required.
 
+use std::error::Error as StdError;
+
 use bytes::BytesMut;
 use postgres::types::{IsNull, ToSql, Type, to_sql_checked};
 use postgres::{Client, NoTls, SimpleQueryMessage, Transaction};
@@ -26,7 +28,7 @@ pub struct PostgresEngine {
 
 impl PostgresEngine {
     pub fn connect(url: &str) -> Result<PostgresEngine, DbError> {
-        let client = Client::connect(url, NoTls).map_err(|e| DbError::Connect(e.to_string()))?;
+        let client = Client::connect(url, NoTls).map_err(|e| DbError::Connect(describe(&e)))?;
         Ok(PostgresEngine { client })
     }
 }
@@ -40,12 +42,12 @@ impl DatabaseEngine for PostgresEngine {
                  WHERE table_schema = 'public' ORDER BY table_name",
                 &[],
             )
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+            .map_err(|e| DbError::Schema(describe(&e)))?;
 
         let mut tables = Vec::with_capacity(rows.len());
         for row in rows {
-            let name: String = row.try_get(0).map_err(|e| DbError::Schema(e.to_string()))?;
-            let table_type: String = row.try_get(1).map_err(|e| DbError::Schema(e.to_string()))?;
+            let name: String = row.try_get(0).map_err(|e| DbError::Schema(describe(&e)))?;
+            let table_type: String = row.try_get(1).map_err(|e| DbError::Schema(describe(&e)))?;
             let kind = if table_type == "VIEW" {
                 RelationKind::View
             } else {
@@ -66,13 +68,13 @@ impl DatabaseEngine for PostgresEngine {
         let rows = self
             .client
             .query(&sql, &[])
-            .map_err(|e| DbError::Query(e.to_string()))?;
+            .map_err(|e| DbError::Query(describe(&e)))?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
             let mut values = Vec::with_capacity(row.len());
             for i in 0..row.len() {
                 let cell: Option<String> =
-                    row.try_get(i).map_err(|e| DbError::Query(e.to_string()))?;
+                    row.try_get(i).map_err(|e| DbError::Query(describe(&e)))?;
                 values.push(match cell {
                     Some(text) => Value::Text(text),
                     None => Value::Null,
@@ -91,7 +93,7 @@ impl DatabaseEngine for PostgresEngine {
         let messages = self
             .client
             .simple_query(sql)
-            .map_err(|e| DbError::Query(e.to_string()))?;
+            .map_err(|e| DbError::Query(describe(&e)))?;
 
         let mut columns: Vec<String> = Vec::new();
         let mut rows: Vec<Vec<Value>> = Vec::new();
@@ -135,7 +137,7 @@ impl DatabaseEngine for PostgresEngine {
         let mut tx = self
             .client
             .transaction()
-            .map_err(|e| DbError::Commit(e.to_string()))?;
+            .map_err(|e| DbError::Commit(describe(&e)))?;
         for mutation in mutations {
             let table_meta = catalog
                 .find(mutation.table())
@@ -150,7 +152,7 @@ impl DatabaseEngine for PostgresEngine {
                 });
             }
         }
-        tx.commit().map_err(|e| DbError::Commit(e.to_string()))?;
+        tx.commit().map_err(|e| DbError::Commit(describe(&e)))?;
         Ok(())
     }
 }
@@ -169,27 +171,35 @@ impl PostgresEngine {
                    AND tc.table_schema = 'public' AND tc.table_name = $1",
                 &[&table],
             )
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+            .map_err(|e| DbError::Schema(describe(&e)))?;
         let mut pk_columns: Vec<String> = Vec::new();
         for row in pk_rows {
-            pk_columns.push(row.try_get(0).map_err(|e| DbError::Schema(e.to_string()))?);
+            pk_columns.push(row.try_get(0).map_err(|e| DbError::Schema(describe(&e)))?);
         }
 
         let rows = self
             .client
             .query(
-                "SELECT column_name, data_type \
-                 FROM information_schema.columns \
-                 WHERE table_schema = 'public' AND table_name = $1 \
-                 ORDER BY ordinal_position",
+                // `format_type` renders the exact, castable type name.
+                // `information_schema.columns.data_type` cannot be used here:
+                // it reports the literal `USER-DEFINED` for enums, composites
+                // and domains and `ARRAY` for arrays, neither of which is a
+                // type a `::` cast can name.
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod) \
+                 FROM pg_attribute a \
+                 JOIN pg_class c ON c.oid = a.attrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = 'public' AND c.relname = $1 \
+                   AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum",
                 &[&table],
             )
-            .map_err(|e| DbError::Schema(e.to_string()))?;
+            .map_err(|e| DbError::Schema(describe(&e)))?;
 
         let mut columns = Vec::with_capacity(rows.len());
         for row in rows {
-            let name: String = row.try_get(0).map_err(|e| DbError::Schema(e.to_string()))?;
-            let data_type: String = row.try_get(1).map_err(|e| DbError::Schema(e.to_string()))?;
+            let name: String = row.try_get(0).map_err(|e| DbError::Schema(describe(&e)))?;
+            let data_type: String = row.try_get(1).map_err(|e| DbError::Schema(describe(&e)))?;
             columns.push(ColumnMeta {
                 affinity: TypeAffinity::from_declared(&data_type),
                 is_primary_key: pk_columns.iter().any(|c| c == &name),
@@ -208,7 +218,7 @@ fn exec_statement(tx: &mut Transaction<'_>, stmt: &ParamStatement) -> Result<u64
         .map(|p| p as &(dyn ToSql + Sync))
         .collect();
     tx.execute(&stmt.sql, &params)
-        .map_err(|e| DbError::Commit(e.to_string()))
+        .map_err(|e| DbError::Commit(describe(&e)))
 }
 
 // Lives in the DB layer (not in `model`) so `Value` stays free of any postgres
@@ -238,4 +248,49 @@ impl ToSql for Value {
     }
 
     to_sql_checked!();
+}
+
+/// `postgres::Error` renders only its kind, so a rejected statement stringifies
+/// to just "db error" — the server's message, detail and hint are reachable
+/// only through `as_db_error`. Flatten them into the single line the status bar
+/// renders.
+fn describe(error: &postgres::Error) -> String {
+    let Some(db) = error.as_db_error() else {
+        return flatten_causes(error);
+    };
+
+    let mut out = format!(
+        "{}: {} [{}]",
+        db.severity(),
+        one_line(db.message()),
+        db.code().code()
+    );
+    for (label, field) in [
+        ("detail", db.detail()),
+        ("hint", db.hint()),
+        ("constraint", db.constraint()),
+    ] {
+        if let Some(text) = field {
+            out.push_str(&format!("; {label}: {}", one_line(text)));
+        }
+    }
+    out
+}
+
+/// Non-server failures (I/O, TLS, parameter encoding) keep their explanation in
+/// the source chain, which `Display` alone never reaches.
+fn flatten_causes(error: &postgres::Error) -> String {
+    let mut out = error.to_string();
+    let mut cause = StdError::source(error);
+    while let Some(source) = cause {
+        out.push_str(&format!(": {source}"));
+        cause = source.source();
+    }
+    out
+}
+
+/// Server fields such as `detail` arrive with embedded newlines; the status bar
+/// is a single unwrapped line.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
