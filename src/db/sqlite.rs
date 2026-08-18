@@ -152,14 +152,28 @@ impl SqliteEngine {
             // table_info columns: cid, name, type, notnull, dflt_value, pk
             let name: String = row.get(1).map_err(|e| DbError::Schema(e.to_string()))?;
             let declared: String = row.get(2).map_err(|e| DbError::Schema(e.to_string()))?;
+            let default: Option<String> = row.get(4).map_err(|e| DbError::Schema(e.to_string()))?;
             let pk: i64 = row.get(5).map_err(|e| DbError::Schema(e.to_string()))?;
             columns.push(ColumnMeta {
                 affinity: TypeAffinity::from_declared(&declared),
+                is_primary_key: pk > 0,
+                has_default: default.is_some(),
                 name,
                 declared_type: declared,
-                is_primary_key: pk > 0,
             });
         }
+
+        // A lone `INTEGER PRIMARY KEY` aliases the rowid, so SQLite fills it in
+        // even though `table_info` reports no default. The alias only applies to
+        // a single-column key, hence the count.
+        if columns.iter().filter(|c| c.is_primary_key).count() == 1
+            && let Some(key) = columns
+                .iter_mut()
+                .find(|c| c.is_primary_key && c.declared_type.eq_ignore_ascii_case("integer"))
+        {
+            key.has_default = true;
+        }
+
         Ok(columns)
     }
 }
@@ -203,7 +217,7 @@ impl ToSql for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::delta::{CellDelta, KeyPart, RowKey};
+    use crate::model::delta::{CellDelta, InsertCell, KeyPart, RowKey};
 
     fn select_all(
         table: &str,
@@ -218,6 +232,45 @@ mod tests {
             order_by: order.map(str::to_string),
             limit: 100,
         }
+    }
+
+    #[test]
+    fn insert_omitting_a_generated_key_lets_the_server_fill_it_in() {
+        let mut engine = SqliteEngine::connect(":memory:").expect("open in-memory db");
+        engine
+            .conn
+            .execute_batch(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, seen TEXT DEFAULT 'never');\
+                 INSERT INTO users VALUES (1, 'Alejandro', 'today');",
+            )
+            .expect("seed schema");
+
+        let catalog = engine.harvest_schema().expect("harvest");
+        let users = catalog.find("users").expect("users table");
+        // `INTEGER PRIMARY KEY` aliases the rowid, so SQLite supplies it even
+        // though `table_info` reports no default of its own.
+        assert!(users.column("id").expect("id col").has_default);
+        assert!(users.column("seen").expect("seen col").has_default);
+        assert!(!users.column("name").expect("name col").has_default);
+
+        // What a pasted row compiles to: the key is left to the server.
+        let mutation = RowMutation::Insert {
+            table: "users".to_string(),
+            row: vec![
+                InsertCell::ServerDefault,
+                InsertCell::Provided(Value::Text("Alejandro".to_string())),
+                InsertCell::Provided(Value::Text("today".to_string())),
+            ],
+        };
+        engine.commit(&[mutation], &catalog).expect("commit insert");
+
+        let rows = engine
+            .run_select(&select_all("users", &["id", "name"], None, Some("id")))
+            .expect("select");
+        assert_eq!(rows.len(), 2);
+        // A fresh rowid, not a collision with the row it was copied from.
+        assert_eq!(rows[1][0], Value::Integer(2));
+        assert_eq!(rows[1][1], Value::Text("Alejandro".to_string()));
     }
 
     #[test]

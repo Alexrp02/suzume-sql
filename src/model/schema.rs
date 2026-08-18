@@ -18,6 +18,10 @@ pub struct ColumnMeta {
     pub declared_type: String,
     pub affinity: TypeAffinity,
     pub is_primary_key: bool,
+    /// True when the server supplies a value if the column is left out of an
+    /// INSERT (a `DEFAULT` clause, an identity/serial column, or SQLite's
+    /// `INTEGER PRIMARY KEY` rowid alias).
+    pub has_default: bool,
 }
 
 /// A table or view plus its columns.

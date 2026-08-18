@@ -140,25 +140,29 @@ impl DatabaseEngine for MysqlEngine {
 impl MysqlEngine {
     fn columns_for(&mut self, table: &str) -> Result<Vec<ColumnMeta>, DbError> {
         // `column_key` is 'PRI' for any column that is part of the primary key.
-        let rows: Vec<(String, String, String)> = self
+        // `extra` carries `auto_increment`, which supplies a value without a
+        // `column_default` of its own.
+        let rows: Vec<(String, String, String, i64)> = self
             .conn
             .exec_map(
-                "SELECT column_name, data_type, column_key \
+                "SELECT column_name, data_type, column_key, \
+                        column_default IS NOT NULL OR extra LIKE '%auto_increment%' \
                  FROM information_schema.columns \
                  WHERE table_schema = DATABASE() AND table_name = ? \
                  ORDER BY ordinal_position",
                 (table,),
-                |(name, data_type, column_key): (String, String, String)| {
-                    (name, data_type, column_key)
+                |(name, data_type, column_key, has_default): (String, String, String, i64)| {
+                    (name, data_type, column_key, has_default)
                 },
             )
             .map_err(|e| DbError::Schema(e.to_string()))?;
 
         let mut columns = Vec::with_capacity(rows.len());
-        for (name, data_type, column_key) in rows {
+        for (name, data_type, column_key, has_default) in rows {
             columns.push(ColumnMeta {
                 affinity: TypeAffinity::from_declared(&data_type),
                 is_primary_key: column_key == "PRI",
+                has_default: has_default != 0,
                 name,
                 declared_type: data_type,
             });

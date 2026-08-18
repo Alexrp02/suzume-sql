@@ -185,7 +185,8 @@ impl PostgresEngine {
                 // it reports the literal `USER-DEFINED` for enums, composites
                 // and domains and `ARRAY` for arrays, neither of which is a
                 // type a `::` cast can name.
-                "SELECT a.attname, format_type(a.atttypid, a.atttypmod) \
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), \
+                    a.atthasdef OR a.attidentity <> '' \
                  FROM pg_attribute a \
                  JOIN pg_class c ON c.oid = a.attrelid \
                  JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -200,9 +201,11 @@ impl PostgresEngine {
         for row in rows {
             let name: String = row.try_get(0).map_err(|e| DbError::Schema(describe(&e)))?;
             let data_type: String = row.try_get(1).map_err(|e| DbError::Schema(describe(&e)))?;
+            let has_default: bool = row.try_get(2).map_err(|e| DbError::Schema(describe(&e)))?;
             columns.push(ColumnMeta {
                 affinity: TypeAffinity::from_declared(&data_type),
                 is_primary_key: pk_columns.iter().any(|c| c == &name),
+                has_default,
                 name,
                 declared_type: data_type,
             });

@@ -31,6 +31,17 @@ pub struct CellDelta {
     pub new: Value,
 }
 
+/// One cell of a pending INSERT.
+///
+/// `ServerDefault` is a distinct state rather than a NULL `Value`: it means the
+/// column is omitted from the statement entirely so the server applies its own
+/// default, which is not the same as inserting NULL into it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InsertCell {
+    Provided(Value),
+    ServerDefault,
+}
+
 /// A pending mutation of one row, ready to be compiled into a single
 /// parameterised statement.
 ///
@@ -50,7 +61,7 @@ pub enum RowMutation {
     },
     Insert {
         table: String,
-        row: Vec<Value>,
+        row: Vec<InsertCell>,
     },
 }
 

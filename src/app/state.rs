@@ -13,7 +13,7 @@ use crate::app::picker::{PickerPrompt, PickerState};
 use crate::clipboard::ClipboardSink;
 use crate::config::Config;
 use crate::db::query::SelectQuery;
-use crate::model::delta::{CellDelta, KeyPart, RowKey, RowMutation};
+use crate::model::delta::{CellDelta, InsertCell, KeyPart, RowKey, RowMutation};
 use crate::model::schema::{Catalog, ColumnMeta};
 use crate::model::value::{TypeAffinity, Value};
 use crate::worker::{TestHandle, TestOutcome, WorkerHandle, WorkerRequest, WorkerResponse};
@@ -319,6 +319,27 @@ impl GridView {
         self.sel_row = self.row_count().saturating_sub(1);
     }
 
+    /// Compile one pending-insert row into its cells.
+    ///
+    /// A primary key the server can generate is emitted as
+    /// [`InsertCell::ServerDefault`] so the column is left out of the statement:
+    /// a pasted row is a new row, and reusing the yanked key would collide with
+    /// the row it was copied from.
+    fn insert_cells(&self, row: usize) -> Vec<InsertCell> {
+        self.columns
+            .iter()
+            .enumerate()
+            .map(|(col, meta)| {
+                let value = self.display_value(row, col).cloned().unwrap_or(Value::Null);
+                if meta.is_primary_key && meta.has_default && value.is_null() {
+                    InsertCell::ServerDefault
+                } else {
+                    InsertCell::Provided(value)
+                }
+            })
+            .collect()
+    }
+
     /// Compile the pending state into one [`RowMutation`] per affected row: a
     /// `Delete` for each marked row and an `Update` for each edited row. A row
     /// marked for deletion carries no overlay edits (see [`Self::toggle_delete`]),
@@ -329,7 +350,7 @@ impl GridView {
         for i in self.rows.len() - self.pending_inserts_number..self.rows.len() {
             mutations.push(RowMutation::Insert {
                 table: table.to_string(),
-                row: self.rows[i].clone(),
+                row: self.insert_cells(i),
             });
         }
 
@@ -878,6 +899,7 @@ impl App {
                 declared_type: String::new(),
                 affinity: crate::model::value::TypeAffinity::Unknown,
                 is_primary_key: false,
+                has_default: false,
             })
             .collect();
         let count = rows.len();
@@ -1162,6 +1184,10 @@ impl App {
             Ok(serde_json::Value::Object(map)) => {
                 let mut new_row = vec![Value::Null; self.browser.grid.col_count()];
                 for (col, meta) in self.browser.grid.columns.iter().enumerate() {
+                    // Leave a server-generated key empty so the INSERT omits it.
+                    if meta.is_primary_key && meta.has_default {
+                        continue;
+                    }
                     if let Some(value) = map.get(&meta.name) {
                         new_row[col] = Value::from_json(value);
                     }
@@ -1325,6 +1351,15 @@ mod tests {
             declared_type: "text".to_string(),
             affinity: TypeAffinity::Text,
             is_primary_key: pk,
+            has_default: false,
+        }
+    }
+
+    /// A primary key the server fills in when the column is omitted.
+    fn generated_key(name: &str) -> ColumnMeta {
+        ColumnMeta {
+            has_default: true,
+            ..col(name, true)
         }
     }
 
@@ -1351,6 +1386,79 @@ mod tests {
         let mut empty = SidebarState::default();
         empty.move_selection(5); // must not panic on an empty list
         assert_eq!(empty.selected, 0);
+    }
+
+    fn grid_with_generated_key() -> GridView {
+        let mut grid = GridView::new(vec![generated_key("id"), col("email", false)], false);
+        grid.set_rows(vec![vec![
+            Value::Integer(1),
+            Value::Text("a@x".to_string()),
+        ]]);
+        grid
+    }
+
+    #[test]
+    fn pending_insert_leaves_a_generated_key_to_the_server() {
+        let mut grid = grid_with_generated_key();
+        // What `paste_row` produces: every column copied except the key.
+        grid.add_row(vec![Value::Null, Value::Text("copy@x".to_string())]);
+
+        let mutations = grid.build_mutations("users");
+        assert_eq!(
+            mutations,
+            vec![RowMutation::Insert {
+                table: "users".to_string(),
+                row: vec![
+                    InsertCell::ServerDefault,
+                    InsertCell::Provided(Value::Text("copy@x".to_string())),
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn editing_a_pending_insert_key_overrides_the_server_default() {
+        let mut grid = grid_with_generated_key();
+        grid.add_row(vec![Value::Null, Value::Text("copy@x".to_string())]);
+        grid.record_edit(1, 0, Value::Integer(9));
+
+        // The typed key must reach the INSERT, and must not also surface as an
+        // UPDATE against a row the server has not created yet.
+        let mutations = grid.build_mutations("users");
+        assert_eq!(
+            mutations,
+            vec![RowMutation::Insert {
+                table: "users".to_string(),
+                row: vec![
+                    InsertCell::Provided(Value::Integer(9)),
+                    InsertCell::Provided(Value::Text("copy@x".to_string())),
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn pending_insert_sends_a_key_the_server_cannot_generate() {
+        let mut grid = GridView::new(vec![col("id", true), col("email", false)], false);
+        grid.set_rows(vec![vec![
+            Value::Integer(1),
+            Value::Text("a@x".to_string()),
+        ]]);
+        grid.add_row(vec![Value::Null, Value::Text("copy@x".to_string())]);
+
+        // No default to fall back on, so NULL goes to the server and it reports
+        // the not-null violation, rather than the column vanishing silently.
+        let mutations = grid.build_mutations("users");
+        assert_eq!(
+            mutations,
+            vec![RowMutation::Insert {
+                table: "users".to_string(),
+                row: vec![
+                    InsertCell::Provided(Value::Null),
+                    InsertCell::Provided(Value::Text("copy@x".to_string())),
+                ],
+            }]
+        );
     }
 
     #[test]

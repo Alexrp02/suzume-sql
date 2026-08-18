@@ -357,6 +357,7 @@ mod tests {
             declared_type: "text".to_string(),
             affinity: TypeAffinity::Text,
             is_primary_key: false,
+            has_default: false,
         }
     }
 

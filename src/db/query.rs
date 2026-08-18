@@ -4,7 +4,7 @@
 //! the execution-ready statement here from the cached schema plus the user's
 //! filter/order fragments and the pending delta queue.
 
-use crate::model::delta::{CellDelta, RowKey, RowMutation};
+use crate::model::delta::{CellDelta, InsertCell, RowKey, RowMutation};
 use crate::model::schema::TableMeta;
 use crate::model::value::Value;
 
@@ -191,38 +191,48 @@ fn build_insert(
     dialect: Dialect,
     table_meta: &TableMeta,
     table: &str,
-    row: &[Value],
+    row: &[InsertCell],
 ) -> ParamStatement {
     let mut params: Vec<Value> = Vec::new();
     let mut next_index = 0usize;
+    let mut columns: Vec<String> = Vec::new();
+    let mut placeholders: Vec<String> = Vec::new();
 
-    let columns = table_meta
-        .columns
-        .iter()
-        .map(|c| dialect.quote_ident(&c.name))
-        .collect::<Vec<_>>()
-        .join(", ");
+    // Zipping the cells against the schema keeps the column list and the value
+    // list aligned by construction. A `ServerDefault` cell appears in neither,
+    // which is exactly what makes the server apply the column's own default.
+    for (cell, meta) in row.iter().zip(table_meta.columns.iter()) {
+        let InsertCell::Provided(value) = cell else {
+            continue;
+        };
+        columns.push(dialect.quote_ident(&meta.name));
+        placeholders.push(placeholder(
+            dialect,
+            table_meta,
+            &meta.name,
+            value.clone(),
+            &mut params,
+            &mut next_index,
+        ));
+    }
 
-    let placeholders = row
-        .iter()
-        .enumerate()
-        .map(|(i, value)| {
-            placeholder(
-                dialect,
-                table_meta,
-                &table_meta.columns[i].name,
-                value.clone(),
-                &mut params,
-                &mut next_index,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let sql = format!(
-        "INSERT INTO {} ({columns}) VALUES ({placeholders})",
-        dialect.quote_ident(table)
-    );
+    let quoted_table = dialect.quote_ident(table);
+    // Every column defaulted: the empty column list is a syntax error, so each
+    // dialect needs its own "all defaults" spelling.
+    let sql = if columns.is_empty() {
+        match dialect {
+            Dialect::Sqlite | Dialect::Postgres => {
+                format!("INSERT INTO {quoted_table} DEFAULT VALUES")
+            }
+            Dialect::Mysql => format!("INSERT INTO {quoted_table} () VALUES ()"),
+        }
+    } else {
+        format!(
+            "INSERT INTO {quoted_table} ({}) VALUES ({})",
+            columns.join(", "),
+            placeholders.join(", ")
+        )
+    };
 
     ParamStatement {
         sql,
@@ -308,6 +318,15 @@ mod tests {
             declared_type: declared.to_string(),
             affinity: TypeAffinity::from_declared(declared),
             is_primary_key: pk,
+            has_default: false,
+        }
+    }
+
+    /// A primary key the server fills in when the column is omitted.
+    fn generated_key(name: &str, declared: &str) -> ColumnMeta {
+        ColumnMeta {
+            has_default: true,
+            ..col(name, declared, true)
         }
     }
 
@@ -416,6 +435,86 @@ mod tests {
         );
         assert_eq!(stmt.params, vec![Value::Text("John".to_string())]);
         assert!(stmt.requires_single_row_check);
+    }
+
+    fn users_meta_generated_key() -> TableMeta {
+        TableMeta {
+            name: "users".to_string(),
+            kind: RelationKind::Table,
+            columns: vec![
+                generated_key("id", "integer"),
+                col("name", "character varying", false),
+                col("status", "user_status", false),
+            ],
+        }
+    }
+
+    #[test]
+    fn build_insert_omits_the_server_generated_key() {
+        let mutation = RowMutation::Insert {
+            table: "users".to_string(),
+            row: vec![
+                InsertCell::ServerDefault,
+                InsertCell::Provided(Value::Text("Ada".to_string())),
+                InsertCell::Provided(Value::Text("active".to_string())),
+            ],
+        };
+        let stmt = build_statement(Dialect::Postgres, &users_meta_generated_key(), &mutation);
+        // `id` is absent from both lists, so the sequence supplies it. The enum
+        // column casts to its real type name, which is what the catalog now
+        // reports in place of `USER-DEFINED`.
+        assert_eq!(
+            stmt.sql,
+            r#"INSERT INTO "users" ("name", "status") VALUES ($1::text::character varying, $2::text::user_status)"#
+        );
+        assert_eq!(
+            stmt.params,
+            vec![
+                Value::Text("Ada".to_string()),
+                Value::Text("active".to_string()),
+            ]
+        );
+        assert!(!stmt.requires_single_row_check);
+    }
+
+    #[test]
+    fn build_insert_keeps_an_explicitly_provided_key() {
+        let mutation = RowMutation::Insert {
+            table: "users".to_string(),
+            row: vec![
+                InsertCell::Provided(Value::Integer(7)),
+                InsertCell::Provided(Value::Text("Ada".to_string())),
+                InsertCell::Provided(Value::Text("active".to_string())),
+            ],
+        };
+        let stmt = build_statement(Dialect::Sqlite, &users_meta_generated_key(), &mutation);
+        assert_eq!(
+            stmt.sql,
+            r#"INSERT INTO "users" ("id", "name", "status") VALUES (?, ?, ?)"#
+        );
+        assert_eq!(stmt.params[0], Value::Integer(7));
+    }
+
+    #[test]
+    fn build_insert_with_every_column_defaulted_uses_the_dialect_spelling() {
+        let mutation = RowMutation::Insert {
+            table: "users".to_string(),
+            row: vec![InsertCell::ServerDefault; 3],
+        };
+        let meta = users_meta_generated_key();
+        // An empty column list is a syntax error in every dialect.
+        assert_eq!(
+            build_statement(Dialect::Postgres, &meta, &mutation).sql,
+            r#"INSERT INTO "users" DEFAULT VALUES"#
+        );
+        assert_eq!(
+            build_statement(Dialect::Sqlite, &meta, &mutation).sql,
+            r#"INSERT INTO "users" DEFAULT VALUES"#
+        );
+        assert_eq!(
+            build_statement(Dialect::Mysql, &meta, &mutation).sql,
+            "INSERT INTO `users` () VALUES ()"
+        );
     }
 
     #[test]
