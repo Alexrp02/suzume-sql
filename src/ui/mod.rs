@@ -83,9 +83,12 @@ fn render_browser(frame: &mut Frame, app: &mut App) {
         render_completion(frame, anchor, completion);
     }
 
-    // The fuzzy finder overlays everything when active.
+    // The fuzzy finders overlay everything when active.
     if let Focus::TableFinder(finder) = &app.browser.focus {
-        render_finder(frame, finder);
+        render_finder(frame, finder, "Find table");
+    }
+    if let Focus::SchemaFinder(state) = &app.browser.focus {
+        render_finder(frame, &state.finder, "Find schema");
     }
 
     // The cell/row inspector overlays everything when active.
@@ -247,10 +250,14 @@ fn input_spans(input: &TextInput) -> Vec<Span<'static>> {
 }
 
 fn render_sidebar(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+    let title = match &app.browser.schema {
+        Some(schema) => format!(" 2 Catalog · {schema} "),
+        None => " 2 Catalog ".to_string(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(focus_border(focused))
-        .title(" 2 Catalog ");
+        .title(title);
 
     let items: Vec<ListItem> = app
         .browser
@@ -315,12 +322,12 @@ fn render_query(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     frame.render_widget(view, inner);
 }
 
-fn render_finder(frame: &mut Frame, finder: &FinderState) {
+fn render_finder(frame: &mut Frame, finder: &FinderState, label: &str) {
     let area = centered_rect(60, 60, frame.area());
     frame.render_widget(Clear, area);
 
     let title = format!(
-        " Find table — {}/{} (Enter open · Esc cancel) ",
+        " {label} — {}/{} (Enter open · Esc cancel) ",
         finder.match_count(),
         finder.total_count()
     );
@@ -389,7 +396,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     spans.push(Span::styled(
-        "   [1-4 panes · / find · i/I inspect · e edit · D delete · y/Y yank · Ctrl+R run · R refresh · Ctrl+O connections · q quit]",
+        "   [1-4 panes · / find · Ctrl+G schema · i/I inspect · e edit · D delete · y/Y yank · Ctrl+R run · R refresh · Ctrl+O connections · q quit]",
         Style::default().fg(Color::DarkGray),
     ));
 

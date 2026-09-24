@@ -7,7 +7,7 @@ use crate::db::query::{Dialect, SelectQuery, build_statement};
 use crate::db::{DatabaseEngine, RAW_ROW_CAP, RawResult};
 use crate::error::DbError;
 use crate::model::delta::RowMutation;
-use crate::model::schema::{Catalog, ColumnMeta, RelationKind, TableMeta};
+use crate::model::schema::{Catalog, ColumnMeta, RelationKind, SchemaName, TableMeta};
 use crate::model::value::{TypeAffinity, Value};
 
 pub struct SqliteEngine {
@@ -22,6 +22,21 @@ impl SqliteEngine {
 }
 
 impl DatabaseEngine for SqliteEngine {
+    fn list_schemas(&mut self) -> Result<Vec<SchemaName>, DbError> {
+        // SQLite has a single implicit namespace; there is nothing to switch to.
+        Ok(Vec::new())
+    }
+
+    fn current_schema(&mut self) -> Result<SchemaName, DbError> {
+        Ok(SchemaName::new("main"))
+    }
+
+    fn set_schema(&mut self, _schema: &SchemaName) -> Result<(), DbError> {
+        Err(DbError::Schema(
+            "SQLite has no schemas to switch between".to_string(),
+        ))
+    }
+
     fn harvest_schema(&mut self) -> Result<Catalog, DbError> {
         let mut relations: Vec<(String, RelationKind)> = Vec::new();
         {
@@ -232,6 +247,17 @@ mod tests {
             order_by: order.map(str::to_string),
             limit: 100,
         }
+    }
+
+    #[test]
+    fn reports_a_single_implicit_namespace() {
+        let mut engine = SqliteEngine::connect(":memory:").expect("open in-memory db");
+        assert_eq!(engine.current_schema().expect("current").as_str(), "main");
+        assert!(engine.list_schemas().expect("list").is_empty());
+        assert!(
+            engine.set_schema(&SchemaName::new("other")).is_err(),
+            "switching namespaces is unsupported for SQLite"
+        );
     }
 
     #[test]

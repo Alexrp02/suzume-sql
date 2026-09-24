@@ -178,6 +178,11 @@ fn handle_browser(app: &mut App, key: KeyEvent) {
         app.open_picker();
         return;
     }
+    // Ctrl+G opens the fuzzy schema finder from anywhere.
+    if is_ctrl(&key, 'g') {
+        app.open_schema_finder();
+        return;
+    }
     // Ctrl+R runs the query pane from anywhere (intercepted before edtui).
     if is_ctrl(&key, 'r') {
         app.run_query_pane();
@@ -196,6 +201,7 @@ fn handle_browser(app: &mut App, key: KeyEvent) {
         Focus::Data => handle_data(app, key),
         Focus::CellEdit(_) => handle_cell_edit(app, key),
         Focus::TableFinder(_) => handle_finder(app, key),
+        Focus::SchemaFinder(_) => handle_schema_finder(app, key),
         Focus::Inspect(_) => handle_inspect(app, key),
     }
 }
@@ -520,6 +526,42 @@ fn handle_finder(app: &mut App, key: KeyEvent) {
     }
 }
 
+fn handle_schema_finder(app: &mut App, key: KeyEvent) {
+    if is_ctrl(&key, 'w') {
+        with_schema_query(app, TextInput::delete_word);
+        return;
+    }
+    if is_ctrl(&key, 'u') {
+        with_schema_query(app, TextInput::delete_to_start);
+        return;
+    }
+    // fzf-style navigation.
+    if is_ctrl(&key, 'n') {
+        move_schema_finder(app, 1);
+        return;
+    }
+    if is_ctrl(&key, 'p') {
+        move_schema_finder(app, -1);
+        return;
+    }
+
+    match key.code {
+        KeyCode::Esc => app.schema_finder_cancel(),
+        KeyCode::Enter => app.schema_finder_accept(),
+        KeyCode::Down => move_schema_finder(app, 1),
+        KeyCode::Up => move_schema_finder(app, -1),
+        KeyCode::Backspace => with_schema_query(app, TextInput::backspace),
+        KeyCode::Delete => with_schema_query(app, TextInput::delete),
+        // Cursor motion does not change the query, so it must not re-rank.
+        KeyCode::Left => with_schema_cursor(app, TextInput::left),
+        KeyCode::Right => with_schema_cursor(app, TextInput::right),
+        KeyCode::Home => with_schema_cursor(app, TextInput::home),
+        KeyCode::End => with_schema_cursor(app, TextInput::end),
+        KeyCode::Char(c) => with_schema_query(app, |input| input.insert(c)),
+        _ => {}
+    }
+}
+
 fn handle_inspect(app: &mut App, key: KeyEvent) {
     if is_ctrl(&key, 'd') {
         app.scroll_inspect_half(1);
@@ -631,6 +673,31 @@ fn with_finder_cursor(app: &mut App, op: impl FnOnce(&mut TextInput)) {
 fn move_finder(app: &mut App, delta: isize) {
     if let Focus::TableFinder(finder) = &mut app.browser.focus {
         finder.move_selection(delta);
+    }
+}
+
+/// Apply an edit to the schema finder query and re-rank. Editing the query also
+/// cancels any armed switch confirmation.
+fn with_schema_query(app: &mut App, op: impl FnOnce(&mut TextInput)) {
+    if let Focus::SchemaFinder(state) = &mut app.browser.focus {
+        op(&mut state.finder.input);
+        state.finder.recompute();
+        state.confirm = None;
+    }
+}
+
+/// Move the schema finder query cursor without re-ranking (query unchanged).
+fn with_schema_cursor(app: &mut App, op: impl FnOnce(&mut TextInput)) {
+    if let Focus::SchemaFinder(state) = &mut app.browser.focus {
+        op(&mut state.finder.input);
+    }
+}
+
+/// Move the schema finder selection, cancelling any armed confirmation.
+fn move_schema_finder(app: &mut App, delta: isize) {
+    if let Focus::SchemaFinder(state) = &mut app.browser.focus {
+        state.confirm = None;
+        state.finder.move_selection(delta);
     }
 }
 

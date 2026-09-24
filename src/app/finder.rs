@@ -5,6 +5,7 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 
 use crate::app::editor::TextInput;
+use crate::model::schema::SchemaName;
 
 /// Rank `names` against a fuzzy `query`, returning the matching indices into
 /// `names`, best match first. An empty query keeps the original order.
@@ -68,6 +69,13 @@ impl FinderState {
         self.matches.get(self.selected).copied()
     }
 
+    /// The name behind the currently selected match, if any.
+    pub fn selected_name(&self) -> Option<&str> {
+        self.selected_index()
+            .and_then(|i| self.names.get(i))
+            .map(String::as_str)
+    }
+
     /// The source indices of the current matches, in ranked order. Lets callers
     /// render richer rows than the bare names (e.g. the connection picker).
     pub fn matched_indices(&self) -> &[usize] {
@@ -92,6 +100,22 @@ impl FinderState {
             .iter()
             .filter_map(|&i| self.names.get(i).map(String::as_str))
             .collect()
+    }
+}
+
+/// The fuzzy schema finder overlay, wrapping [`FinderState`] with the armed
+/// confirmation that guards discarding uncommitted grid edits on a switch.
+pub struct SchemaFinderState {
+    pub finder: FinderState,
+    pub confirm: Option<SchemaName>,
+}
+
+impl SchemaFinderState {
+    pub fn new(names: Vec<String>) -> SchemaFinderState {
+        SchemaFinderState {
+            finder: FinderState::new(names),
+            confirm: None,
+        }
     }
 }
 

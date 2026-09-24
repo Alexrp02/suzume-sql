@@ -19,7 +19,7 @@ use crate::db::query::{Dialect, SelectQuery, build_statement};
 use crate::db::{DatabaseEngine, RAW_ROW_CAP, RawResult};
 use crate::error::DbError;
 use crate::model::delta::RowMutation;
-use crate::model::schema::{Catalog, ColumnMeta, RelationKind, TableMeta};
+use crate::model::schema::{Catalog, ColumnMeta, RelationKind, SchemaName, TableMeta};
 use crate::model::value::{TypeAffinity, Value};
 
 pub struct MysqlEngine {
@@ -38,6 +38,34 @@ impl MysqlEngine {
 }
 
 impl DatabaseEngine for MysqlEngine {
+    fn list_schemas(&mut self) -> Result<Vec<SchemaName>, DbError> {
+        // A MySQL "schema" is a database; system databases are valid targets and
+        // are left in for completeness.
+        let names: Vec<String> = self
+            .conn
+            .query_map(
+                "SELECT schema_name FROM information_schema.schemata ORDER BY schema_name",
+                |name: String| name,
+            )
+            .map_err(|e| DbError::Schema(e.to_string()))?;
+        Ok(names.into_iter().map(SchemaName::new).collect())
+    }
+
+    fn current_schema(&mut self) -> Result<SchemaName, DbError> {
+        let name: Option<String> = self
+            .conn
+            .query_first("SELECT DATABASE()")
+            .map_err(|e| DbError::Schema(e.to_string()))?;
+        name.map(SchemaName::new)
+            .ok_or_else(|| DbError::Schema("no database is selected".to_string()))
+    }
+
+    fn set_schema(&mut self, schema: &SchemaName) -> Result<(), DbError> {
+        self.conn
+            .query_drop(format!("USE {}", quote_identifier(schema.as_str())))
+            .map_err(|e| DbError::Schema(e.to_string()))
+    }
+
     fn harvest_schema(&mut self) -> Result<Catalog, DbError> {
         // `DATABASE()` resolves to the schema named in the connection URL.
         let relations: Vec<(String, String)> = self
@@ -243,6 +271,12 @@ fn format_datetime(
     } else {
         format!("{date} {hour:02}:{min:02}:{sec:02}.{micro:06}")
     }
+}
+
+/// Quote an identifier for interpolation into a statement. Schema names cannot
+/// be bound as parameters, so they must be escaped here.
+fn quote_identifier(ident: &str) -> String {
+    format!("`{}`", ident.replace('`', "``"))
 }
 
 /// Render a `TIME` value as text. MySQL `TIME` can exceed 24h and be negative,

@@ -5,20 +5,27 @@
 //! never blocks on the database, so the render loop stays responsive and can
 //! animate a spinner while work is in flight.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use crate::config::ConnectionConfig;
 use crate::db::query::SelectQuery;
 use crate::db::{self, DatabaseEngine};
+use crate::error::DbError;
 use crate::model::delta::RowMutation;
-use crate::model::schema::Catalog;
+use crate::model::schema::{Catalog, SchemaName};
 use crate::model::value::Value;
 
 /// A request from the UI thread to the worker.
 #[derive(Debug)]
 pub enum WorkerRequest {
     HarvestSchema,
+    /// List the switchable namespaces (Postgres schemas / MySQL databases).
+    ListSchemas,
+    /// Switch the session default namespace and return its catalog.
+    SwitchSchema(SchemaName),
     /// Run a browse query. `id` lets the UI discard stale results when the user
     /// has moved on to a newer query.
     RunSelect {
@@ -39,7 +46,17 @@ pub enum WorkerRequest {
 pub enum WorkerResponse {
     /// The connection was established; the UI may now request the schema.
     Connected,
-    Schema(Catalog),
+    /// A harvested catalog together with the namespace it came from. Shared as
+    /// an `Arc` so the worker cache and the UI hold one snapshot, not copies.
+    Schema {
+        schema: SchemaName,
+        catalog: Arc<Catalog>,
+    },
+    /// The result of [`WorkerRequest::ListSchemas`], with the active namespace.
+    SchemaList {
+        schemas: Vec<SchemaName>,
+        active: SchemaName,
+    },
     Rows {
         id: u64,
         rows: Vec<Vec<Value>>,
@@ -139,24 +156,52 @@ fn run(config: ConnectionConfig, req_rx: Receiver<WorkerRequest>, resp_tx: Sende
             return;
         }
     };
+    let mut active = match engine.current_schema() {
+        Ok(schema) => schema,
+        Err(e) => {
+            let _ = resp_tx.send(WorkerResponse::Failed(e.to_string()));
+            return;
+        }
+    };
     if resp_tx.send(WorkerResponse::Connected).is_err() {
         return;
     }
 
-    // The worker keeps its own copy of the catalog so it can resolve table
-    // metadata (primary keys, column types) when compiling commits.
-    let mut catalog = Catalog::default();
+    // The worker keeps one catalog per visited namespace so it can resolve table
+    // metadata (primary keys, column types) when compiling commits, and so a
+    // schema switch is instant once that schema has been loaded before.
+    let mut cache: HashMap<SchemaName, Arc<Catalog>> = HashMap::new();
 
     while let Ok(request) = req_rx.recv() {
         let response = match request {
             WorkerRequest::Shutdown => break,
             WorkerRequest::HarvestSchema => match engine.harvest_schema() {
-                Ok(harvested) => {
-                    catalog = harvested.clone();
-                    WorkerResponse::Schema(harvested)
+                Ok(catalog) => {
+                    let catalog = Arc::new(catalog);
+                    cache.insert(active.clone(), Arc::clone(&catalog));
+                    WorkerResponse::Schema {
+                        schema: active.clone(),
+                        catalog,
+                    }
                 }
                 Err(e) => WorkerResponse::Failed(e.to_string()),
             },
+            WorkerRequest::ListSchemas => match engine.list_schemas() {
+                Ok(schemas) => WorkerResponse::SchemaList {
+                    schemas,
+                    active: active.clone(),
+                },
+                Err(e) => WorkerResponse::Failed(e.to_string()),
+            },
+            WorkerRequest::SwitchSchema(schema) => {
+                match switch_schema(engine.as_mut(), &mut cache, &mut active, schema) {
+                    Ok(catalog) => WorkerResponse::Schema {
+                        schema: active.clone(),
+                        catalog,
+                    },
+                    Err(e) => WorkerResponse::Failed(e.to_string()),
+                }
+            }
             WorkerRequest::RunSelect { id, query } => match engine.run_select(&query) {
                 Ok(rows) => WorkerResponse::Rows { id, rows },
                 Err(e) => WorkerResponse::Failed(e.to_string()),
@@ -170,13 +215,36 @@ fn run(config: ConnectionConfig, req_rx: Receiver<WorkerRequest>, resp_tx: Sende
                 },
                 Err(e) => WorkerResponse::Failed(e.to_string()),
             },
-            WorkerRequest::Commit(mutations) => match engine.commit(&mutations, &catalog) {
-                Ok(()) => WorkerResponse::Committed,
-                Err(e) => WorkerResponse::Failed(e.to_string()),
+            WorkerRequest::Commit(mutations) => match cache.get(&active) {
+                Some(catalog) => match engine.commit(&mutations, catalog) {
+                    Ok(()) => WorkerResponse::Committed,
+                    Err(e) => WorkerResponse::Failed(e.to_string()),
+                },
+                None => WorkerResponse::Failed("schema is not loaded yet".to_string()),
             },
         };
         if resp_tx.send(response).is_err() {
             break;
         }
     }
+}
+
+/// Make `schema` the session default and return its catalog, reusing the cache
+/// when possible. The `SET`/`USE` always runs, even on a cache hit, so the
+/// connection's default namespace follows the active schema that commits and
+/// raw queries resolve against.
+fn switch_schema(
+    engine: &mut dyn DatabaseEngine,
+    cache: &mut HashMap<SchemaName, Arc<Catalog>>,
+    active: &mut SchemaName,
+    schema: SchemaName,
+) -> Result<Arc<Catalog>, DbError> {
+    engine.set_schema(&schema)?;
+    *active = schema.clone();
+    if let Some(cached) = cache.get(&schema) {
+        return Ok(Arc::clone(cached));
+    }
+    let catalog = Arc::new(engine.harvest_schema()?);
+    cache.insert(schema, Arc::clone(&catalog));
+    Ok(catalog)
 }

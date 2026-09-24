@@ -1,6 +1,33 @@
 //! Cached schema metadata harvested from the backend catalog.
 
+use std::fmt;
+
 use crate::model::value::TypeAffinity;
+
+/// The namespace relations are harvested from: a Postgres schema or a MySQL
+/// database. SQLite has a single implicit namespace, reported as `main`.
+///
+/// The name is only ever interpolated into a quoted identifier (never into a
+/// value position), so it is kept as a distinct type to make that boundary
+/// explicit.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SchemaName(String);
+
+impl SchemaName {
+    pub fn new(name: impl Into<String>) -> SchemaName {
+        SchemaName(name.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SchemaName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// Whether a relation can be mutated in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

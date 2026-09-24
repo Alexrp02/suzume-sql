@@ -19,7 +19,7 @@ use crate::db::query::{Dialect, ParamStatement, SelectQuery, build_statement};
 use crate::db::{DatabaseEngine, RAW_ROW_CAP, RawResult};
 use crate::error::DbError;
 use crate::model::delta::RowMutation;
-use crate::model::schema::{Catalog, ColumnMeta, RelationKind, TableMeta};
+use crate::model::schema::{Catalog, ColumnMeta, RelationKind, SchemaName, TableMeta};
 use crate::model::value::{TypeAffinity, Value};
 
 pub struct PostgresEngine {
@@ -34,12 +34,52 @@ impl PostgresEngine {
 }
 
 impl DatabaseEngine for PostgresEngine {
+    fn list_schemas(&mut self) -> Result<Vec<SchemaName>, DbError> {
+        let rows = self
+            .client
+            .query(
+                "SELECT schema_name FROM information_schema.schemata \
+                 WHERE schema_name <> 'information_schema' \
+                   AND schema_name NOT LIKE 'pg_%' \
+                 ORDER BY schema_name",
+                &[],
+            )
+            .map_err(|e| DbError::Schema(describe(&e)))?;
+        rows.into_iter()
+            .map(|row| {
+                row.try_get::<_, String>(0)
+                    .map(SchemaName::new)
+                    .map_err(|e| DbError::Schema(describe(&e)))
+            })
+            .collect()
+    }
+
+    fn current_schema(&mut self) -> Result<SchemaName, DbError> {
+        let row = self
+            .client
+            .query_one("SELECT current_schema()", &[])
+            .map_err(|e| DbError::Schema(describe(&e)))?;
+        let name: Option<String> = row.try_get(0).map_err(|e| DbError::Schema(describe(&e)))?;
+        name.map(SchemaName::new).ok_or_else(|| {
+            DbError::Schema("no existing schema is present in the search_path".to_string())
+        })
+    }
+
+    fn set_schema(&mut self, schema: &SchemaName) -> Result<(), DbError> {
+        self.client
+            .batch_execute(&format!(
+                "SET search_path TO {}",
+                quote_identifier(schema.as_str())
+            ))
+            .map_err(|e| DbError::Schema(describe(&e)))
+    }
+
     fn harvest_schema(&mut self) -> Result<Catalog, DbError> {
         let rows = self
             .client
             .query(
                 "SELECT table_name, table_type FROM information_schema.tables \
-                 WHERE table_schema = 'public' ORDER BY table_name",
+                 WHERE table_schema = current_schema() ORDER BY table_name",
                 &[],
             )
             .map_err(|e| DbError::Schema(describe(&e)))?;
@@ -168,7 +208,7 @@ impl PostgresEngine {
                    ON tc.constraint_name = kcu.constraint_name \
                   AND tc.constraint_schema = kcu.constraint_schema \
                  WHERE tc.constraint_type = 'PRIMARY KEY' \
-                   AND tc.table_schema = 'public' AND tc.table_name = $1",
+                   AND tc.table_schema = current_schema() AND tc.table_name = $1",
                 &[&table],
             )
             .map_err(|e| DbError::Schema(describe(&e)))?;
@@ -190,7 +230,7 @@ impl PostgresEngine {
                  FROM pg_attribute a \
                  JOIN pg_class c ON c.oid = a.attrelid \
                  JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE n.nspname = 'public' AND c.relname = $1 \
+                 WHERE n.nspname = current_schema() AND c.relname = $1 \
                    AND a.attnum > 0 AND NOT a.attisdropped \
                  ORDER BY a.attnum",
                 &[&table],
@@ -296,4 +336,10 @@ fn flatten_causes(error: &postgres::Error) -> String {
 /// is a single unwrapped line.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Quote an identifier for interpolation into a statement. Schema names cannot
+/// be bound as parameters, so they must be escaped here.
+fn quote_identifier(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
 }

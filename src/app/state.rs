@@ -1,20 +1,21 @@
 //! Application state and the top-level state machine.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use edtui::{EditorEventHandler, EditorState, Lines};
 
 use crate::app::completion::Completion;
 use crate::app::conn_form::{ConnectionDraft, TestStatus};
 use crate::app::editor::{CellEditor, TextInput};
-use crate::app::finder::FinderState;
+use crate::app::finder::{FinderState, SchemaFinderState};
 use crate::app::inspect::InspectState;
 use crate::app::picker::{PickerPrompt, PickerState};
 use crate::clipboard::ClipboardSink;
 use crate::config::Config;
 use crate::db::query::SelectQuery;
 use crate::model::delta::{CellDelta, InsertCell, KeyPart, RowKey, RowMutation};
-use crate::model::schema::{Catalog, ColumnMeta};
+use crate::model::schema::{Catalog, ColumnMeta, SchemaName};
 use crate::model::value::{TypeAffinity, Value};
 use crate::worker::{TestHandle, TestOutcome, WorkerHandle, WorkerRequest, WorkerResponse};
 
@@ -26,6 +27,8 @@ pub const ROW_LIMIT: u32 = 100;
 pub enum PendingOp {
     Schema,
     SchemaRefresh,
+    SchemaList,
+    SchemaSwitch,
     Select,
     Commit,
 }
@@ -35,6 +38,8 @@ impl PendingOp {
         match self {
             PendingOp::Schema => "Loading schema",
             PendingOp::SchemaRefresh => "Refreshing schema",
+            PendingOp::SchemaList => "Loading schemas",
+            PendingOp::SchemaSwitch => "Switching schema",
             PendingOp::Select => "Running query",
             PendingOp::Commit => "Committing",
         }
@@ -92,6 +97,8 @@ pub enum Focus {
     CellEdit(CellEditor),
     /// The fuzzy table finder overlay (summoned from Catalog/Data).
     TableFinder(FinderState),
+    /// The fuzzy schema finder overlay (summoned with Ctrl+G).
+    SchemaFinder(SchemaFinderState),
     /// The read-only cell/row inspector overlay (summoned from the data grid).
     Inspect(InspectState),
 }
@@ -101,8 +108,8 @@ impl Focus {
     pub fn pane(&self) -> u8 {
         match self {
             Focus::Controls { .. } => 1,
-            // The finder overlays the catalog.
-            Focus::Catalog | Focus::TableFinder(_) => 2,
+            // Both finders overlay the catalog.
+            Focus::Catalog | Focus::TableFinder(_) | Focus::SchemaFinder(_) => 2,
             Focus::Query => 3,
             Focus::Data | Focus::CellEdit(_) | Focus::Inspect(_) => 4,
         }
@@ -491,6 +498,8 @@ impl QueryPane {
 /// The main browser pane state.
 pub struct BrowserState {
     pub focus: Focus,
+    /// The namespace the loaded catalog was harvested from, for display.
+    pub schema: Option<SchemaName>,
     pub sidebar: SidebarState,
     /// The applied filter (`WHERE` fragment).
     pub filter_text: String,
@@ -520,6 +529,7 @@ impl BrowserState {
     fn new() -> BrowserState {
         BrowserState {
             focus: Focus::Catalog,
+            schema: None,
             sidebar: SidebarState::default(),
             filter_text: String::new(),
             order_text: String::new(),
@@ -543,7 +553,8 @@ pub struct App {
     pub screen: Screen,
     pub worker: Option<WorkerHandle>,
     pub connection_name: String,
-    pub catalog: Catalog,
+    /// The active schema's immutable snapshot, shared with the worker's cache.
+    pub catalog: Arc<Catalog>,
     pub browser: BrowserState,
     pub status: StatusLine,
     pub pending: Option<PendingOp>,
@@ -568,7 +579,7 @@ impl App {
             screen: Screen::Picker(picker),
             worker: None,
             connection_name: String::new(),
-            catalog: Catalog::default(),
+            catalog: Arc::new(Catalog::default()),
             browser: BrowserState::new(),
             status: StatusLine::default(),
             pending: None,
@@ -785,10 +796,15 @@ impl App {
                 self.pending = Some(PendingOp::Schema);
                 self.info("Connected. Loading schema...");
             }
-            WorkerResponse::Schema(catalog) => match self.pending {
-                Some(PendingOp::SchemaRefresh) => self.on_schema_refresh(catalog),
-                _ => self.on_schema(catalog),
+            WorkerResponse::Schema { schema, catalog } => match self.pending {
+                Some(PendingOp::SchemaRefresh) => self.on_schema_refresh(schema, catalog),
+                Some(PendingOp::SchemaSwitch) => self.on_schema_switch(schema, catalog),
+                _ => self.on_schema(schema, catalog),
             },
+            WorkerResponse::SchemaList { schemas, active } => {
+                self.pending = None;
+                self.on_schema_list(schemas, active);
+            }
             WorkerResponse::Rows { id, rows } => {
                 if id == self.latest_select_id {
                     self.pending = None;
@@ -825,10 +841,11 @@ impl App {
         }
     }
 
-    fn on_schema(&mut self, catalog: Catalog) {
+    fn on_schema(&mut self, schema: SchemaName, catalog: Arc<Catalog>) {
         let names: Vec<String> = catalog.tables.iter().map(|t| t.name.clone()).collect();
         self.catalog = catalog;
         self.browser = BrowserState::new();
+        self.browser.schema = Some(schema);
         self.browser.sidebar.names = names;
         self.screen = Screen::Browser;
         self.pending = None;
@@ -853,7 +870,7 @@ impl App {
     /// the loaded table, grid (and its pending edits), query and focus are all
     /// preserved. Only the catalog (used by completion) and the sidebar list are
     /// updated, keeping the highlight on the same relation when it still exists.
-    fn on_schema_refresh(&mut self, catalog: Catalog) {
+    fn on_schema_refresh(&mut self, schema: SchemaName, catalog: Arc<Catalog>) {
         let selected_name = self
             .browser
             .sidebar
@@ -862,12 +879,32 @@ impl App {
             .cloned();
         let names: Vec<String> = catalog.tables.iter().map(|t| t.name.clone()).collect();
         self.catalog = catalog;
+        self.browser.schema = Some(schema);
         self.browser.sidebar.selected = selected_name
             .and_then(|name| names.iter().position(|n| *n == name))
             .unwrap_or(0);
         self.browser.sidebar.names = names;
         self.pending = None;
         self.info("Schema refreshed");
+    }
+
+    /// Apply a catalog from a schema switch: reset the browse view to the new
+    /// namespace, but keep the query buffer the user was editing.
+    fn on_schema_switch(&mut self, schema: SchemaName, catalog: Arc<Catalog>) {
+        let query = std::mem::replace(&mut self.browser.query, QueryPane::new());
+        self.on_schema(schema.clone(), catalog);
+        self.browser.query = query;
+        self.info(format!("Switched to schema `{schema}`"));
+    }
+
+    /// Open the schema finder from the namespace list returned by the worker.
+    fn on_schema_list(&mut self, schemas: Vec<SchemaName>, _active: SchemaName) {
+        if schemas.is_empty() {
+            self.info("No schemas to switch to");
+            return;
+        }
+        let names = schemas.into_iter().map(|s| s.to_string()).collect();
+        self.browser.focus = Focus::SchemaFinder(SchemaFinderState::new(names));
     }
 
     /// Load the relation currently highlighted in the sidebar into the grid.
@@ -1065,6 +1102,57 @@ impl App {
     /// Close the finder without changing the selection.
     pub fn finder_cancel(&mut self) {
         self.browser.focus = Focus::Catalog;
+    }
+
+    /// Ask the worker for the switchable namespaces; the finder opens when the
+    /// list arrives (see [`Self::on_schema_list`]).
+    pub fn open_schema_finder(&mut self) {
+        if self.worker.is_none() {
+            return;
+        }
+        self.send(WorkerRequest::ListSchemas);
+        self.pending = Some(PendingOp::SchemaList);
+        self.info("Loading schemas...");
+    }
+
+    /// Accept the schema finder's selection. When the grid has uncommitted edits,
+    /// the first accept arms a confirmation; the second performs the switch.
+    pub fn schema_finder_accept(&mut self) {
+        let (name, confirmed) = match &self.browser.focus {
+            Focus::SchemaFinder(state) => match state.finder.selected_name() {
+                Some(name) => (name.to_string(), state.confirm.is_some()),
+                None => {
+                    self.browser.focus = Focus::Catalog;
+                    return;
+                }
+            },
+            _ => return,
+        };
+        if self.browser.schema.as_ref().map(SchemaName::as_str) == Some(name.as_str()) {
+            self.browser.focus = Focus::Catalog;
+            self.info(format!("Already on schema `{name}`"));
+            return;
+        }
+        if self.browser.grid.has_pending() && !confirmed {
+            if let Focus::SchemaFinder(state) = &mut self.browser.focus {
+                state.confirm = Some(SchemaName::new(name));
+            }
+            self.info("Unsaved edits: press Enter again to discard and switch schema");
+            return;
+        }
+        self.switch_schema(SchemaName::new(name));
+    }
+
+    /// Close the schema finder without switching.
+    pub fn schema_finder_cancel(&mut self) {
+        self.browser.focus = Focus::Catalog;
+    }
+
+    /// Ask the worker to switch the session default namespace.
+    pub fn switch_schema(&mut self, schema: SchemaName) {
+        self.send(WorkerRequest::SwitchSchema(schema.clone()));
+        self.pending = Some(PendingOp::SchemaSwitch);
+        self.info(format!("Switching to schema `{schema}`..."));
     }
 
     /// Focus a pane by its number (1=Controls, 2=Catalog, 3=Query, 4=Data).
@@ -1583,6 +1671,7 @@ mod tests {
         let browser = BrowserState {
             // Actively editing a cell exercises the edit-cursor render path.
             focus: Focus::CellEdit(CellEditor::new(0, 1, "new@x")),
+            schema: None,
             sidebar: SidebarState {
                 names: vec!["users".to_string()],
                 selected: 0,
@@ -1607,7 +1696,7 @@ mod tests {
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
-            catalog: Catalog::default(),
+            catalog: Arc::new(Catalog::default()),
             browser,
             status: StatusLine::default(),
             pending: Some(PendingOp::Select),
@@ -1646,7 +1735,7 @@ mod tests {
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
-            catalog: Catalog::default(),
+            catalog: Arc::new(Catalog::default()),
             browser,
             status: StatusLine::default(),
             pending: None,
@@ -1696,7 +1785,7 @@ mod tests {
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
-            catalog,
+            catalog: Arc::new(catalog),
             browser,
             status: StatusLine::default(),
             pending: None,
@@ -1740,7 +1829,7 @@ mod tests {
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
-            catalog: Catalog::default(),
+            catalog: Arc::new(Catalog::default()),
             browser,
             status: StatusLine::default(),
             pending: None,
@@ -1784,7 +1873,7 @@ mod tests {
             screen: Screen::Browser,
             worker: None,
             connection_name: "local".to_string(),
-            catalog: Catalog::default(),
+            catalog: Arc::new(Catalog::default()),
             browser,
             status: StatusLine::default(),
             pending: None,
@@ -1857,7 +1946,7 @@ mod tests {
             screen,
             worker: None,
             connection_name: String::new(),
-            catalog: Catalog::default(),
+            catalog: Arc::new(Catalog::default()),
             browser: BrowserState::new(),
             status: StatusLine::default(),
             pending: None,
@@ -1868,6 +1957,36 @@ mod tests {
             select_seq: 0,
             latest_select_id: 0,
         }
+    }
+
+    #[test]
+    fn switching_schema_resets_the_catalog_but_keeps_the_query_buffer() {
+        use crate::model::schema::{RelationKind, TableMeta};
+        use edtui::Lines;
+
+        let mut app = bare_app(Config::default(), Screen::Browser);
+        app.browser.schema = Some(SchemaName::new("public"));
+        app.browser.query.state = EditorState::new(Lines::from("SELECT 1"));
+        app.pending = Some(PendingOp::SchemaSwitch);
+
+        let catalog = Catalog {
+            tables: vec![TableMeta {
+                name: "events".to_string(),
+                kind: RelationKind::Table,
+                columns: vec![col("id", true)],
+            }],
+        };
+        app.apply_response(WorkerResponse::Schema {
+            schema: SchemaName::new("analytics"),
+            catalog: Arc::new(catalog),
+        });
+
+        assert_eq!(
+            app.browser.schema.as_ref().map(SchemaName::as_str),
+            Some("analytics")
+        );
+        assert_eq!(app.browser.query.sql(), "SELECT 1");
+        assert_eq!(app.browser.sidebar.names, vec!["events".to_string()]);
     }
 
     #[test]

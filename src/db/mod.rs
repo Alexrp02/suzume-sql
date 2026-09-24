@@ -8,7 +8,7 @@ pub mod sqlite;
 use crate::config::ConnectionConfig;
 use crate::error::DbError;
 use crate::model::delta::RowMutation;
-use crate::model::schema::Catalog;
+use crate::model::schema::{Catalog, SchemaName};
 use crate::model::value::Value;
 use query::SelectQuery;
 
@@ -32,7 +32,19 @@ pub struct RawResult {
 /// All methods are blocking; the trait object lives on a dedicated worker
 /// thread (see [`crate::worker`]) so the UI loop never blocks.
 pub trait DatabaseEngine: Send {
-    /// Introspect the catalog: tables, views, columns, types, primary keys.
+    /// List the namespaces this backend can switch between. Empty for engines
+    /// without a schema concept (SQLite).
+    fn list_schemas(&mut self) -> Result<Vec<SchemaName>, DbError>;
+
+    /// The namespace the session currently resolves unqualified relations in.
+    fn current_schema(&mut self) -> Result<SchemaName, DbError>;
+
+    /// Make `schema` the session default (Postgres `search_path`, MySQL `USE`).
+    /// Engines without a schema concept report an error.
+    fn set_schema(&mut self, schema: &SchemaName) -> Result<(), DbError>;
+
+    /// Introspect the catalog of the current namespace: tables, views, columns,
+    /// types, primary keys.
     fn harvest_schema(&mut self) -> Result<Catalog, DbError>;
 
     /// Run a browse query and return its rows. The returned rows have one
