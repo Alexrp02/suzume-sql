@@ -1411,6 +1411,34 @@ impl App {
         }
     }
 
+    /// Set the selected cell to `NULL` as a pending edit. This is the only way
+    /// to produce a real `NULL`: an empty cell editor maps to `NULL` only for
+    /// non-text columns, and to the empty string for text ones.
+    pub fn set_cell_null(&mut self) {
+        if self.browser.grid.read_only {
+            self.error("This relation is read-only");
+            return;
+        }
+        if self.browser.grid.row_count() == 0 || self.browser.grid.col_count() == 0 {
+            self.info("Nothing to set to NULL");
+            return;
+        }
+        let row = self.browser.grid.sel_row;
+        if self.browser.grid.is_pending_delete(row) {
+            self.error("Row is marked for deletion (D to unmark)");
+            return;
+        }
+        let col = self.browser.grid.sel_col;
+        if let Some(value) = self.browser.grid.display_value(row, col)
+            && value.is_null()
+        {
+            self.info("Cell is already NULL");
+            return;
+        }
+        self.browser.grid.record_edit(row, col, Value::Null);
+        self.info("Cell set to NULL (Ctrl+S commit / u discard)");
+    }
+
     /// Discard all pending edits, deletions and insertions.
     pub fn discard_pending(&mut self) {
         if self.browser.grid.has_pending() {
@@ -1665,6 +1693,51 @@ mod tests {
         grid.toggle_delete(0);
         assert!(!grid.is_pending_delete(0));
         assert!(grid.build_mutations("users").is_empty());
+    }
+
+    #[test]
+    fn set_cell_null_records_a_pending_edit() {
+        let mut app = bare_app(Config::default(), Screen::Browser);
+        app.browser.grid = grid_with_pk();
+        app.browser.grid.sel_row = 0;
+        app.browser.grid.sel_col = 1;
+
+        app.set_cell_null();
+
+        assert!(app.browser.grid.is_dirty(0, 1));
+        assert_eq!(app.browser.grid.display_value(0, 1), Some(&Value::Null));
+
+        let mutations = app.browser.grid.build_mutations("users");
+        let RowMutation::Update { changes, .. } = &mutations[0] else {
+            panic!("expected an update mutation");
+        };
+        assert_eq!(changes[0].new, Value::Null);
+    }
+
+    #[test]
+    fn set_cell_null_is_idempotent_and_guarded() {
+        let mut app = bare_app(Config::default(), Screen::Browser);
+        app.browser.grid = grid_with_pk();
+        app.browser.grid.sel_col = 1;
+
+        // An already-NULL cell is a no-op: nothing is marked dirty.
+        app.browser.grid.rows[0][1] = Value::Null;
+        app.set_cell_null();
+        assert!(!app.browser.grid.is_dirty(0, 1));
+        assert!(!app.status.is_error);
+
+        // A row marked for deletion refuses the edit.
+        app.browser.grid.toggle_delete(0);
+        app.set_cell_null();
+        assert!(app.status.is_error);
+        assert!(!app.browser.grid.is_dirty(0, 1));
+
+        // Read-only relations refuse the edit.
+        app.browser.grid.toggle_delete(0);
+        app.browser.grid.read_only = true;
+        app.set_cell_null();
+        assert!(app.status.is_error);
+        assert!(!app.browser.grid.is_dirty(0, 1));
     }
 
     #[test]

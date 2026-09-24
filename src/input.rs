@@ -377,6 +377,7 @@ fn handle_data(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('G') => app.browser.grid.goto_bottom(),
         KeyCode::Char('e') | KeyCode::Enter => begin_cell_edit(app),
+        KeyCode::Char('d') => app.set_cell_null(),
         KeyCode::Char('i') => app.inspect_cell(),
         KeyCode::Char('I') => app.inspect_row(),
         KeyCode::Char('D') => app.delete_row(),
