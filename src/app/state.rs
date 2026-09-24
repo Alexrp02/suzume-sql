@@ -1245,6 +1245,16 @@ impl App {
         self.yank(text, "cell");
     }
 
+    pub fn add_empty_row(&mut self) {
+        if self.browser.grid.read_only {
+            self.error("This relation is read-only");
+            return;
+        }
+        let new_row = vec![Value::Null; self.browser.grid.col_count()];
+        self.browser.grid.add_row(new_row);
+        self.info("Added empty row (Ctrl+S commit / u discard)");
+    }
+
     /// Yank the selected row as a JSON object to the clipboard/register.
     pub fn yank_row(&mut self) {
         let grid = &self.browser.grid;

@@ -384,6 +384,7 @@ fn handle_data(app: &mut App, key: KeyEvent) {
         KeyCode::Char('y') => app.yank_cell(),
         KeyCode::Char('Y') => app.yank_row(),
         KeyCode::Char('P') => app.paste_row(),
+        KeyCode::Char('n') => app.add_empty_row(),
         KeyCode::Char('/') => app.open_finder(),
         _ => {}
     }
