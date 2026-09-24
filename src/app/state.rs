@@ -244,13 +244,30 @@ impl GridView {
         self.overlay.retain(|&(r, _), _| r != row);
     }
 
-    /// Total pending row operations (edited cells plus marked-for-deletion rows).
+    /// Total pending row operations: edited cells, marked-for-deletion rows and
+    /// rows awaiting insertion.
     pub fn pending_count(&self) -> usize {
-        self.overlay.len() + self.pending_deletes.len()
+        self.overlay.len() + self.pending_deletes.len() + self.pending_inserts_number
     }
 
     pub fn has_pending(&self) -> bool {
-        !self.overlay.is_empty() || !self.pending_deletes.is_empty()
+        !self.overlay.is_empty()
+            || !self.pending_deletes.is_empty()
+            || self.pending_inserts_number > 0
+    }
+
+    /// Drop every pending change: new rows are removed and edits and deletion
+    /// marks are cleared, returning the grid to its last loaded state.
+    pub fn discard_pending(&mut self) {
+        if !self.has_pending() {
+            return;
+        }
+        self.rows
+            .truncate(self.rows.len() - self.pending_inserts_number);
+        self.pending_inserts_number = 0;
+        self.overlay.clear();
+        self.pending_deletes.clear();
+        self.clamp_selection();
     }
 
     /// Serialize a row to a compact JSON object using the displayed values
@@ -1394,11 +1411,10 @@ impl App {
         }
     }
 
-    /// Discard all pending edits and deletions.
+    /// Discard all pending edits, deletions and insertions.
     pub fn discard_pending(&mut self) {
         if self.browser.grid.has_pending() {
-            self.browser.grid.overlay.clear();
-            self.browser.grid.pending_deletes.clear();
+            self.browser.grid.discard_pending();
             self.info("Pending changes discarded");
         }
     }
@@ -1557,6 +1573,40 @@ mod tests {
                 ],
             }]
         );
+    }
+
+    #[test]
+    fn discard_pending_removes_inserts_edits_and_deletes() {
+        let mut grid = grid_with_pk();
+        grid.add_row(vec![Value::Null, Value::Text("new@x".to_string())]);
+        grid.record_edit(0, 1, Value::Text("edited@x".to_string()));
+        grid.toggle_delete(1);
+
+        assert!(grid.has_pending());
+        assert_eq!(grid.pending_count(), 3);
+
+        grid.discard_pending();
+
+        assert_eq!(grid.row_count(), 2);
+        assert!(!grid.has_pending());
+        assert!(!grid.is_dirty(0, 1));
+        assert!(!grid.is_pending_delete(1));
+        assert!(grid.build_mutations("users").is_empty());
+    }
+
+    #[test]
+    fn discard_pending_with_only_inserts_resets_the_grid() {
+        let mut grid = grid_with_pk();
+        grid.add_row(vec![Value::Null, Value::Text("new@x".to_string())]);
+
+        assert!(grid.has_pending());
+        assert_eq!(grid.pending_count(), 1);
+
+        grid.discard_pending();
+
+        assert_eq!(grid.row_count(), 2);
+        assert_eq!(grid.pending_inserts_number, 0);
+        assert!(grid.build_mutations("users").is_empty());
     }
 
     #[test]
